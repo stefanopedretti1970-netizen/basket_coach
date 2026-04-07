@@ -3,82 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>AI Basket Coach - Landscape</title>
+  <title>AI Coach 360 - Multi-Error Pro</title>
   
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
 
   <style>
-    body { 
-      margin: 0; 
-      padding: 0;
-      background: #000; 
-      color: white; 
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      overflow: hidden; 
-    }
-    #container { 
-      position: relative; 
-      width: 100vw; 
-      height: 100vh; 
-      display: flex;
-      justify-content: center;
-      align-items: center;
-    }
+    body { margin: 0; padding: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; }
+    #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
     video { display: none; }
-    canvas { 
-      height: 100vh; 
-      width: 100vw; 
-      object-fit: contain; /* Mantiene le proporzioni senza tagliare */
-    }
-    
-    /* Overlay UI */
-    #overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      pointer-events: none; /* Permette di cliccare attraverso se necessario */
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-
-    #header {
-      padding: 15px;
-      background: rgba(0,0,0,0.5);
-      display: flex;
-      justify-content: space-between;
-      pointer-events: auto;
-    }
-
-    #status {
-      font-size: 1.2rem;
-      font-weight: bold;
-      color: #ff5722;
-      text-transform: uppercase;
-    }
-
-    #footer {
-      padding: 20px;
-      display: flex;
-      justify-content: center;
-      pointer-events: auto;
-    }
-
-    button { 
-      background: #ff5722; 
-      color: white; 
-      border: none; 
-      padding: 15px 40px; 
-      font-size: 18px; 
-      font-weight: bold;
-      border-radius: 8px; 
-      cursor: pointer;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-    }
+    canvas { height: 100vh; width: 100vw; object-fit: contain; }
+    #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; }
+    #header { padding: 15px; background: rgba(0,0,0,0.6); display: flex; justify-content: space-between; pointer-events: auto; }
+    #status { font-size: 1.4rem; font-weight: bold; color: #ff5722; text-shadow: 2px 2px 4px #000; }
+    #footer { padding: 20px; display: flex; justify-content: center; pointer-events: auto; }
+    button { background: #ff5722; color: white; border: none; padding: 20px 50px; font-size: 20px; font-weight: bold; border-radius: 12px; cursor: pointer; }
   </style>
 </head>
 
@@ -89,12 +29,11 @@
     
     <div id="overlay">
       <div id="header">
-        <div id="brand">AI COACH 360</div>
-        <div id="status">RUOTA IL TELEFONO E PREMI AVVIA</div>
+        <div>AI COACH PRO (REAR CAM)</div>
+        <div id="status">RUOTA IN ORIZZONTALE</div>
       </div>
-      
       <div id="footer">
-        <button id="start_btn">AVVIA ANALISI</button>
+        <button id="start_btn">AVVIA COACH (3s Ritardo)</button>
       </div>
     </div>
   </div>
@@ -106,11 +45,17 @@
     const startBtn = document.getElementById('start_btn');
     const statusText = document.getElementById('status');
     
-    // Suoni
-    const soundPerfect = new Audio('https://www.soundjay.com/buttons/sounds/button-37.mp3');
-    const soundError = new Audio('https://www.soundjay.com/buttons/sounds/button-10.mp3');
+    // --- LIBRERIA SUONI ---
+    const sounds = {
+      perfect: new Audio('https://www.soundjay.com/buttons/sounds/button-37.mp3'),    // Chime
+      lowElbow: new Audio('https://www.soundjay.com/buttons/sounds/button-10.mp3'),   // Basso/Errore
+      noSnap: new Audio('https://www.soundjay.com/buttons/sounds/button-20.mp3'),     // Metallico
+      noKnees: new Audio('https://www.soundjay.com/buttons/sounds/button-16.mp3'),    // Wood block
+      flatShot: new Audio('https://www.soundjay.com/buttons/sounds/button-4.mp3')     // Buzz
+    };
 
     let isShooting = false;
+    let kneeDipDetected = false;
 
     function calculateAngle(a, b, c) {
       let radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
@@ -120,76 +65,91 @@
     }
 
     function onResults(results) {
-      // Adatta canvas alle dimensioni del video in tempo reale
       canvasElement.width = videoElement.videoWidth;
       canvasElement.height = videoElement.videoHeight;
-
       canvasCtx.save();
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
       canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
       if (results.poseLandmarks) {
         const lm = results.pose_landmarks;
-        
-        // Disegno tecnico (linee verdi più sottili per non coprire il canestro)
         drawConnectors(canvasCtx, lm, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
-        drawLandmarks(canvasCtx, [lm[12], lm[14], lm[16], lm[0]], {color: '#FF0000', lineWidth: 1, radius: 3});
-
-        // Logica Tiro
+        
+        // Punti Chiave
+        const nose = lm[0];
         const shoulder = lm[12];
         const elbow = lm[14];
         const wrist = lm[16];
-        const nose = lm[0];
+        const indexFinger = lm[18]; // Per lo snap
+        const hip = lm[24];
+        const knee = lm[26];
+        const ankle = lm[28];
 
-        const angle = calculateAngle(shoulder, elbow, wrist);
+        // 1. MONITORAGGIO GINOCCHIA (DIP)
+        const kneeAngle = calculateAngle(hip, knee, ankle);
+        if (kneeAngle < 135 && !isShooting) {
+          kneeDipDetected = true;
+          statusText.innerText = "CARICAMENTO...";
+        }
 
-        if (angle > 165 && wrist.y < nose.y && !isShooting) {
+        // 2. MONITORAGGIO RILASCIO
+        const elbowAngle = calculateAngle(shoulder, elbow, wrist);
+        
+        // Trigger: Braccio si stende sopra il naso
+        if (elbowAngle > 160 && wrist.y < nose.y && !isShooting) {
           isShooting = true;
-          
-          if (elbow.y < nose.y) {
-            soundPerfect.play();
-            statusText.innerText = "PERFETTO!";
-            statusText.style.color = "#4CAF50";
+          let errors = [];
+
+          // ANALISI ERRORI
+          // Error 1: Ginocchia (Se non ha caricato prima di tirare)
+          if (!kneeDipDetected) errors.push("noKnees");
+
+          // Error 2: Gomito Basso (rispetto al naso)
+          if (elbow.y > nose.y) errors.push("lowElbow");
+
+          // Error 3: Angolo di Tiro (Se il polso è troppo avanti rispetto alla spalla = tiro piatto)
+          if (Math.abs(wrist.x - shoulder.x) > 0.15) errors.push("flatShot");
+
+          // Error 4: Polso/Snap (Se le dita non scendono sotto il polso nel follow-through)
+          // Lo verifichiamo leggermente dopo il rilascio nel loop
+          if (indexFinger.y < wrist.y) errors.push("noSnap");
+
+          // ESECUZIONE FEEDBACK
+          if (errors.length === 0) {
+            sounds.perfect.play();
+            statusText.innerText = "OTTIMO TIRO!";
           } else {
-            soundError.play();
-            statusText.innerText = "GOMITO BASSO!";
-            statusText.style.color = "#f44336";
+            // Suona il primo errore rilevato
+            sounds[errors[0]].play();
+            statusText.innerText = "ERRORE: " + errors[0].toUpperCase();
           }
 
+          // Reset per il prossimo tiro
           setTimeout(() => { 
             isShooting = false; 
-            statusText.innerText = "PRONTO PER IL PROSSIMO TIRO";
-            statusText.style.color = "#ff5722";
-          }, 2500);
+            kneeDipDetected = false;
+            statusText.innerText = "PRONTO"; 
+          }, 3000);
         }
       }
       canvasCtx.restore();
     }
 
-    const pose = new Pose({locateFile: (file) => {
-      return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
-    }});
-
-    pose.setOptions({
-      modelComplexity: 1,
-      smoothLandmarks: true,
-      minDetectionConfidence: 0.6,
-      minTrackingConfidence: 0.6
-    });
+    const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+    pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
     pose.onResults(onResults);
 
     startBtn.onclick = () => {
-      // Configurazione per iPhone Landscape (HD 1280x720)
-      const camera = new Camera(videoElement, {
-        onFrame: async () => {
-          await pose.send({image: videoElement});
-        },
-        width: 1280,
-        height: 720
-      });
-      camera.start();
       startBtn.style.display = 'none';
-      statusText.innerText = "ANALISI ATTIVA - INQUADRATURA LATERALE";
+      statusText.innerText = "POSIZIONATI... (3s)";
+      setTimeout(() => {
+        const camera = new Camera(videoElement, {
+          onFrame: async () => { await pose.send({image: videoElement}); },
+          width: 1280, height: 720, facingMode: 'environment' 
+        });
+        camera.start();
+        statusText.innerText = "COACH ATTIVO";
+      }, 3000);
     };
   </script>
 </body>
