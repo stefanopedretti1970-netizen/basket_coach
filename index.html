@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI Coach - Pro Stable</title>
+    <title>AI Basket Lab ULTIMATE</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
@@ -15,10 +15,12 @@
         #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
         .panel { position: absolute; background: rgba(0,0,0,0.7); padding: 8px; border-radius: 8px; pointer-events: auto; font-size: 11px; }
         #top-left { top: 10px; left: 10px; }
-        #feedback { position: absolute; top: 35%; width: 100%; text-align: center; font-size: 2rem; font-weight: bold; color: #ff5722; text-shadow: 2px 2px 5px #000; }
+        #feedback { position: absolute; top: 35%; width: 100%; text-align: center; font-size: 1.8rem; font-weight: bold; color: #ff5722; text-shadow: 2px 2px 5px #000; }
         .controls { position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 10px; pointer-events: auto; }
-        button { padding: 15px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; color: white; background: #ff5722; }
-        #btn-save { background: #4CAF50; display: none; }
+        button { padding: 15px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 13px; color: white; }
+        #btn-start { background: #ff5722; }
+        #btn-save-exit { background: #4CAF50; display: none; }
+        #btn-discard-exit { background: #444; }
     </style>
 </head>
 <body>
@@ -27,26 +29,30 @@
     <canvas id="output_canvas"></canvas>
     <div id="ui">
         <div id="top-left" class="panel">
-            STATO: <span id="st" style="color:#00e676">IDLE</span><br>
-            GINOCCHIO: <span id="kn">-</span> | GOMITO: <span id="el">-</span>
+            GIOCATORE: <input type="text" id="player_name" value="Atleta 1" style="width:70px; background:#222; color:white; border:none;"><br>
+            TIRI: <span id="counter" style="color:#00e676; font-weight:bold;">0</span> | 
+            STATO: <span id="st">IDLE</span>
         </div>
-        <div id="feedback">PREMI AVVIA</div>
+        <div id="feedback">INQUADRATI DI PROFILO E AVVIA</div>
         <div class="controls">
             <button id="btn-start">AVVIA COACH</button>
-            <button id="btn-save">SALVA E CHIUDI</button>
-            <button id="btn-exit" style="background:#444">ESCI</button>
+            <button id="btn-save-exit">SALVA E CHIUDI</button>
+            <button id="btn-discard-exit">ESCI SENZA SALVARE</button>
         </div>
     </div>
 </div>
 
 <script>
-// --- AUDIO ENGINE ---
+// --- CONFIGURAZIONE GOOGLE DRIVE ---
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxUGkpdZCXjgT2g0lnLZV0OM8Esyp-Bm0xAXs4Pkvrr2KgaCZezWV3JORo5TgnchQmTcw/exec";
+
+// --- MOTORE AUDIO (WEB AUDIO API) ---
 let audioCtx = null;
 function playNote(freq, type, dur, vol=0.1) {
     if (!audioCtx) return;
     try {
-        const o = audioCtx.createOscillator();
-        const g = audioCtx.createGain();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
         o.type = type; o.frequency.value = freq;
         g.gain.setValueAtTime(vol, audioCtx.currentTime);
         g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
@@ -57,20 +63,18 @@ function playNote(freq, type, dur, vol=0.1) {
 
 const sounds = {
     perfect: () => { playNote(880, 'sine', 0.4); setTimeout(()=>playNote(1046,'sine',0.4),100); },
-    err_low: () => playNote(150, 'square', 0.5, 0.2),
-    err_mid: () => playNote(400, 'sawtooth', 0.4, 0.1),
-    err_high: () => playNote(1200, 'sine', 0.3, 0.1)
+    error_dip: () => playNote(180, 'square', 0.4, 0.2),
+    error_path: () => playNote(400, 'sawtooth', 0.4, 0.1),
+    error_release: () => playNote(150, 'sine', 0.5, 0.2),
+    error_bio: () => { playNote(300, 'triangle', 0.2); setTimeout(()=>playNote(300, 'triangle', 0.2), 150); }
 };
 
-// --- LOGICA ---
-const GOOGLE_URL = "https://script.google.com/macros/s/AKfycbxUGkpdZCXjgT2g0lnLZV0OM8Esyp-Bm0xAXs4Pkvrr2KgaCZezWV3JORo5TgnchQmTcw/exec";
+// --- LOGICA BIOMECCANICA ---
 let shotLog = [], state = "IDLE", shotData = {}, lastStateChange = Date.now();
-
 const video = document.getElementById('input_video');
 const canvas = document.getElementById('output_canvas');
 const ctx = canvas.getContext('2d');
 const feedback = document.getElementById('feedback');
-const stDisp = document.getElementById('st');
 
 function getAngle(a, b, c) {
     let rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
@@ -78,90 +82,86 @@ function getAngle(a, b, c) {
     return ang > 180 ? 360 - ang : ang;
 }
 
-function updateState(newState) {
-    state = newState;
-    lastStateChange = Date.now();
-    stDisp.innerText = newState;
-}
-
 function analyzePose(lm) {
-    const nose=lm[0], shoulder=lm[12], elbow=lm[14], wrist=lm[16], hip=lm[24], knee=lm[26], ankle=lm[28], foot=lm[32], ear=lm[8];
+    const nose=lm[0], shoulder=lm[12], elbow=lm[14], wrist=lm[16], eye=lm[2], ear=lm[8], hip=lm[24], knee=lm[26], ankle=lm[28], foot=lm[32], index=lm[20];
     const kA = getAngle(hip, knee, ankle);
     const eA = getAngle(shoulder, elbow, wrist);
-    
-    document.getElementById('kn').innerText = Math.round(kA)+"°";
-    document.getElementById('el').innerText = Math.round(eA)+"°";
+    const wA = getAngle(elbow, wrist, index);
 
-    // Reset di sicurezza (se bloccato in uno stato per più di 3 secondi)
+    // Reset di sicurezza (timeout 3 secondi)
     if (state !== "IDLE" && (Date.now() - lastStateChange > 3000)) {
-        updateState("IDLE");
-        feedback.innerText = "RESET...";
-        return;
+        state = "IDLE"; feedback.innerText = "PRONTO"; return;
     }
 
-    // 1. INIZIO (DIP)
+    // 1. CARICAMENTO (DIP)
     if (state === "IDLE" && kA < 145) {
-        updateState("DIP");
-        shotData = { errors: [], minK: kA, startX: ankle.x, lowestWristY: wrist.y };
+        state = "DIP"; lastStateChange = Date.now();
+        shotData = { errors: [], minK: kA, sX: ankle.x, lowestW: wrist.y };
         feedback.innerText = "CARICAMENTO";
     }
 
     if (state === "DIP") {
-        if (nose.x > foot.x + 0.05) shotData.errors.push("Busto_Avanti");
-        if (getAngle(knee, ankle, foot) < 70) shotData.errors.push("Talloni_Piantati");
-        if (wrist.y > shotData.lowestWristY) shotData.lowestWristY = wrist.y;
+        if (nose.x > foot.x + 0.05) shotData.errors.push("Naso oltre punte");
+        if (getAngle(knee, ankle, foot) < 70) shotData.errors.push("Peso talloni");
+        if (Math.abs(wrist.y - shotData.lowestW) < 0.0005) shotData.errors.push("Palla ferma petto");
+        if (wrist.y > shotData.lowestW) shotData.lowestW = wrist.y;
 
-        // Passaggio a RISALITA (Se gambe si stendono o polso sale)
-        if (kA > shotData.minK + 5 || wrist.y < shotData.lowestWristY - 0.02) {
-            updateState("RISE");
+        if (kA > shotData.minK + 5 || wrist.y < shotData.lowestW - 0.02) {
+            state = "RISE"; lastStateChange = Date.now();
             feedback.innerText = "RISALITA";
         }
     }
 
     if (state === "RISE") {
-        // Riconoscimento errori in risalita
         if (Math.abs(wrist.y - (shotData.lastY || 0)) < 0.0005 && wrist.y < nose.y) shotData.errors.push("Hitch");
         shotData.lastY = wrist.y;
+        if (kA > 165 && wrist.y > nose.y) shotData.errors.push("Palla dopo corpo");
 
-        // TRIGGER RILASCIO (Solo basato sull'angolo del gomito)
         if (eA > 155) {
-            updateState("RELEASE");
-            // Verifiche istantanee al rilascio
-            if (elbow.y > nose.y) shotData.errors.push("Gomito_Basso");
+            state = "RELEASE"; lastStateChange = Date.now();
+            if (elbow.y > nose.y) shotData.errors.push("Gomito basso");
             if (wrist.x < ear.x) shotData.errors.push("Catapulta");
-            if (kA > 165 && wrist.y > nose.y) shotData.errors.push("Sincronismo_Errato");
-            
-            // Finalizzazione
+            if (nose.x > shoulder.x + 0.06) shotData.errors.push("Mento avanti");
+            if (wA < 150) shotData.errors.push("Polso piatto");
+
             setTimeout(() => {
-                if (Math.abs(ankle.x - shotData.startX) < 0.03) shotData.errors.push("No_Sway");
-                finalizeShot(eA, shotData.minK);
-            }, 700);
+                if (getAngle(shoulder, elbow, wrist) < 150) shotData.errors.push("Braccio corto");
+                if (Math.abs(ankle.x - shotData.sX) < 0.03) shotData.errors.push("No Sway");
+                finalizeShot(eA, shotData.minK, Math.abs(ankle.x - shotData.sX));
+            }, 800);
         }
     }
 }
 
-function finalizeShot(e, k) {
+function finalizeShot(e, k, s) {
     let res = shotData.errors.length > 0 ? shotData.errors[0] : "PERFETTO";
-    
     if (res === "PERFETTO") {
         sounds.perfect();
         feedback.innerHTML = "<span style='color:#00e676'>PERFETTO!</span>";
     } else {
-        // Feedback sonoro differenziato
-        if (res.match(/Busto|Talloni/)) sounds.err_low();
-        else if (res.match(/Hitch|Sincronismo|Catapulta/)) sounds.err_mid();
-        else sounds.err_high();
-        feedback.innerHTML = "<span style='color:#ff3d00'>"+res.replace(/_/g," ")+"</span>";
+        if (res.match(/Naso|Peso|Palla/)) sounds.error_dip();
+        else if (res.match(/Hitch|corpo|Catapulta/)) sounds.error_path();
+        else if (res.match(/Gomito|corto|Sway/)) sounds.error_release();
+        else sounds.error_bio();
+        feedback.innerHTML = "<span style='color:#ff3d00'>" + res + "</span>";
     }
 
-    shotLog.push({ player: document.getElementById('player_name').value, esito: res, dettagli: shotData.errors.join(","), angoloGomito: Math.round(e), angoloGinocchio: Math.round(k) });
+    shotLog.push({
+        player: document.getElementById('player_name').value,
+        esito: res,
+        dettagli: shotData.errors.join(", "),
+        angoloGomito: Math.round(e),
+        angoloGinocchio: Math.round(k),
+        swayCm: Math.round(s * 100)
+    });
+
     document.getElementById('counter').innerText = shotLog.length;
-    document.getElementById('btn-save').style.display = "block";
-    
-    setTimeout(() => { updateState("IDLE"); feedback.innerText = "PRONTO"; }, 1500);
+    document.getElementById('btn-save-exit').style.display = "block";
+    document.getElementById('st').innerText = "IDLE";
+    state = "IDLE";
 }
 
-// --- MEDIAPIPE & CAMERA ---
+// --- MEDIAPIPE ---
 const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
 pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
 pose.onResults(r => {
@@ -176,24 +176,28 @@ pose.onResults(r => {
     ctx.restore();
 });
 
+// --- CONTROLLI ---
 document.getElementById('btn-start').onclick = function() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
-    playNote(440, 'sine', 0.1); // Prova audio
+    playNote(440, 'sine', 0.1); 
     this.style.display = "none";
     const camera = new Camera(video, { onFrame: async () => { await pose.send({image: video}); }, width: 640, height: 480, facingMode: 'environment' });
-    camera.start().then(() => { feedback.innerText = "COACH ATTIVO"; });
+    camera.start().then(() => { feedback.innerText = "PRONTO"; });
 };
 
-document.getElementById('btn-save').onclick = async function() {
-    this.innerText = "...";
+document.getElementById('btn-save-exit').onclick = async function() {
+    this.innerText = "SALVATAGGIO...";
     try {
-        await fetch(GOOGLE_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
+        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
+        alert("Sessione salvata su Drive!");
         window.location.href = "about:blank";
-    } catch (e) { alert("Errore"); }
+    } catch (e) { alert("Errore connessione"); this.innerText = "SALVA E CHIUDI"; }
 };
 
-document.getElementById('btn-exit').onclick = () => window.location.href = "about:blank";
+document.getElementById('btn-discard-exit').onclick = () => {
+    if(confirm("Esci senza salvare?")) window.location.href = "about:blank";
+};
 </script>
 </body>
 </html>
