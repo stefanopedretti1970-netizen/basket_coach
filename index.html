@@ -63,10 +63,10 @@ function playSound(freq, type, dur) {
 
 const sounds = {
     perfect: () => { playSound(880, 'sine', 0.3); setTimeout(() => playSound(1046, 'sine', 0.3), 100); },
-    error_dip: () => playSound(180, 'square', 0.4),
-    error_path: () => playSound(400, 'sawtooth', 0.3),
-    error_release: () => playSound(150, 'sine', 0.5),
-    error_bio: () => { playSound(300, 'triangle', 0.2); setTimeout(() => playSound(300, 'triangle', 0.2), 150); }
+    error_dip: () => playSound(180, 'square', 0.4),          // Errori Fase 1 Caricamento
+    error_path: () => playSound(400, 'sawtooth', 0.3),        // Errori Fase 2 Risalita
+    error_release: () => playSound(150, 'sine', 0.5),         // Errori Fase 3 Rilascio
+    error_biomech: () => { playSound(300, 'triangle', 0.2); setTimeout(() => playSound(300, 'triangle', 0.2), 150); } // Errori Fase 4 Biomeccanici
 };
 
 // --- LOGICA DI ANALISI ---
@@ -93,90 +93,185 @@ function analyzePose(lm) {
     const eA = getAngle(shoulder, elbow, wrist);
     const wA = getAngle(elbow, wrist, index);
 
+    // --- 1. FASE DI CARICAMENTO (THE DIP & LOAD) ---
     if (state === "IDLE" && kA < 140) {
         state = "DIP";
-        shotData = { errors: [], minK: kA, sX: ankle.x, bY: wrist.y };
+        shotData = { errors: [], minK: kA, sX: ankle.x, bY: wrist.y, frameCount: 0 };
     }
+    
     if (state === "DIP") {
-        if (nose.x > foot.x + 0.05) shotData.errors.push("DIVING");
-        if (getAngle(knee, ankle, foot) < 70) shotData.errors.push("HEEL");
-        if (kA > 145) state = "RISE";
+        // Naso oltre le punte (Diving)
+        if (nose.x > foot.x + 0.05) shotData.errors.push("Naso_oltre_le_punte_(Diving)");
+        // Talloni "piantati" (Heel Striking)
+        if (getAngle(knee, ankle, foot) < 70) shotData.errors.push("Talloni_piantati_(Heel_Striking)");
+        // Palla ferma al petto (Early Pause) - Semplificato: se la palla non si muove durante il dip
+        if (shotData.frameCount > 5 && Math.abs(wrist.y - shotData.bY) < 0.005) shotData.errors.push("Palla_ferma_al_petto_(Early_Pause)");
+        
+        if (kA > 145) { // Passa alla fase di risalita
+            state = "RISE"; 
+            shotData.riseStartKneeAngle = kA; // Angolo ginocchio inizio risalita
+        }
+        shotData.frameCount++;
     }
+
+    // --- 2. FASE DI RISALITA (THE SHOT PATH) ---
     if (state === "RISE") {
-        if (wrist.y < nose.y && wrist.y > ear.y && Math.abs(wrist.y - (shotData.lastY || 0)) < 0.001) shotData.errors.push("HITCH");
+        // L'Hitch (Tiro in due tempi)
+        if (wrist.y < nose.y && wrist.y > ear.y && Math.abs(wrist.y - (shotData.lastY || 0)) < 0.001) shotData.errors.push("L'Hitch_(Tiro_in_due_tempi)");
         shotData.lastY = wrist.y;
-        if (kA > 165 && wrist.y > nose.y) shotData.errors.push("SYNC");
-        if (eA > 160) {
-            state = "RELEASE";
-            if (wrist.x < ear.x) shotData.errors.push("CATAPULT");
-            if (elbow.y > eye.y) shotData.errors.push("LOW_ELBOW");
-            if (nose.x > shoulder.x + 0.06) shotData.errors.push("TURTLE");
+        
+        // Ball after Body (Sincronismo errato) - Se il braccio inizia a salire dopo che le gambe sono già quasi dritte
+        if (kA > 165 && wrist.y > nose.y && shotData.riseStartKneeAngle < 150) shotData.errors.push("Ball_after_Body_(Sincronismo_errato)");
+        
+        // Set Point Arretrato (Catapulta)
+        if (eA > 160 && wrist.x < ear.x) shotData.errors.push("Set_Point_Arretrato_(Catapulta)");
+
+        if (eA > 160) { // Inizia la fase di rilascio (braccio teso)
+            state = "RELEASE"; 
         }
     }
+
+    // --- 3. FASE DI RILASCIO (THE RELEASE) ---
     if (state === "RELEASE") {
-        if (wA < 150) shotData.errors.push("FLAT_WRIST");
+        // Gomito Basso (Flat Release)
+        if (elbow.y > eye.y) shotData.errors.push("Gomito_Basso_(Flat_Release)");
+        
+        // Mento proiettato avanti (Turtle Neck)
+        if (nose.x > shoulder.x + 0.06) shotData.errors.push("Mento_proiettato_avanti_(Turtle_Neck)");
+
+        // Trigger per finalizzare il tiro dopo un breve ritardo per il follow-through
         setTimeout(() => {
-            if (getAngle(shoulder, elbow, wrist) < 155) shotData.errors.push("SHORT_ARM");
-            if (Math.abs(ankle.x - shotData.sX) < 0.03) shotData.errors.push("NO_SWAY");
-            finalizeShot(eA, shotData.minK, Math.abs(ankle.x - shotData.sX));
-        }, 800);
-        state = "WAIT";
+            if (state !== "FINALIZED") { // Previene trigger multipli
+                // Short-Arming (Braccio retratto)
+                if (getAngle(shoulder, elbow, wrist) < 155) shotData.errors.push("Short-Arming_(Braccio_retratto)");
+                
+                // Mancanza di Sway (Atterraggio verticale/rigido)
+                if (Math.abs(ankle.x - shotData.startX) < 0.03) shotData.errors.push("Mancanza_di_Sway_(Atterraggio_rigido)");
+                
+                // Angolo del Polso piatto
+                if (getAngle(elbow, wrist, index) < 150) shotData.errors.push("Angolo_del_Polso_piatto");
+                
+                finalizeShot(eA, shotData.minK, Math.abs(ankle.x - shotData.startX));
+            }
+        }, 1000); // Ritardo per catturare il follow-through
+        state = "FINALIZED"; // Stato per evitare che si finalizzi più volte
     }
 }
 
-function finalizeShot(e, k, s) {
-    let res = shotData.errors.length > 0 ? shotData.errors[0] : "PERFETTO";
-    if (res === "PERFETTO") sounds.perfect();
-    else if (["DIVING", "HEEL"].includes(res)) sounds.error_dip();
-    else if (["HITCH", "SYNC", "CATAPULT"].includes(res)) sounds.error_path();
-    else if (["LOW_ELBOW", "SHORT_ARM"].includes(res)) sounds.error_release();
-    else sounds.error_bio();
+function finalizeShot(eA, kA, swayAbs) {
+    let resultText = "PERFETTO";
+    if (shotData.errors.length > 0) {
+        resultText = shotData.errors[0].replace(/_/g, " "); // Rende il testo leggibile
+        
+        // Categoria errori per il suono
+        const errorCategory = shotData.errors[0];
+        if (errorCategory.includes("Naso_oltre_le_punte") || errorCategory.includes("Talloni_piantati") || errorCategory.includes("Palla_ferma")) sounds.error_dip();
+        else if (errorCategory.includes("Hitch") || errorCategory.includes("Ball_after_Body") || errorCategory.includes("Catapulta")) sounds.error_path();
+        else if (errorCategory.includes("Gomito_Basso") || errorCategory.includes("Short-Arming") || errorCategory.includes("Mancanza_di_Sway")) sounds.error_release();
+        else sounds.error_biomech();
+        
+        feedback.innerHTML = `<span style="color:#ff3d00">${resultText}</span>`;
+    } else {
+        sounds.perfect();
+        feedback.innerHTML = `<span style="color:#00e676">PERFETTO!</span>`;
+    }
 
-    feedback.innerHTML = res === "PERFETTO" ? "<span style='color:#00e676'>PERFETTO!</span>" : "<span style='color:#ff3d00'>"+res+"</span>";
-    shotLog.push({ player: document.getElementById('player_name').value, esito: res, dettagli: shotData.errors.join(","), angoloGomito: Math.round(e), angoloGinocchio: Math.round(k), swayCm: Math.round(s*100) });
+    shotLog.push({
+        player: document.getElementById('player_name').value || "Anonimo",
+        esito: resultText,
+        dettagli: shotData.errors.join(", ").replace(/_/g, " ") || "Nessuno",
+        angoloGomito: Math.round(eA),
+        angoloGinocchio: Math.round(kA),
+        swayCm: Math.round(swayAbs * 100) // Convertiamo in cm (approssimazione)
+    });
+
     document.getElementById('counter').innerText = shotLog.length;
     document.getElementById('btn-save-exit').style.display = "block";
-    state = "IDLE";
+    state = "IDLE"; // Reset per il prossimo tiro
 }
 
+// --- LOGICA VIDEO E MEDIAPIPE ---
 const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
 pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-pose.onResults(r => {
-    if (!r.image) return;
-    canvas.width = r.image.width; canvas.height = r.image.height;
-    ctx.save(); ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.drawImage(r.image, 0,0,canvas.width,canvas.height);
-    if (r.poseLandmarks) {
-        drawConnectors(ctx, r.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
-        analyzePose(r.poseLandmarks);
+
+pose.onResults(results => {
+    if (!results.image) return;
+
+    // FIX SCHERMO NERO: Forza dimensioni canvas
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+    }
+
+    ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+    if (results.poseLandmarks) {
+        // Disegna lo scheletro e chiama la funzione di analisi
+        drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+        analyzePose(results.poseLandmarks);
     }
     ctx.restore();
 });
 
 document.getElementById('btn-start').onclick = function() {
-    if (!audioCtx) audioCtx = new AudioCtx();
-    this.style.display = "none";
-    cameraActive = new Camera(video, { onFrame: async () => { await pose.send({image: video}); }, width: 640, height: 480, facingMode: 'environment' });
-    cameraActive.start().then(() => { feedback.innerText = "COACH ATTIVO"; });
+    // Inizializza AudioContext al click dell'utente (obbligatorio su iOS)
+    if (!audioCtx) { audioCtx = new AudioCtx(); }
+    
+    this.style.display = "none"; // Nasconde il tasto start
+    
+    const camera = new Camera(video, {
+        onFrame: async () => { await pose.send({image: video}); },
+        width: 640, height: 480, facingMode: 'environment'
+    });
+    
+    // Avvia la camera e gestisce eventuali errori
+    camera.start().then(() => {
+        feedback.innerText = "COACH ATTIVO: VAI IN POSIZIONE";
+    }).catch(err => {
+        feedback.innerHTML = `<span style="color:#ff3d00">ERRORE CAMERA: ${err}</span>`;
+    });
 };
 
-async function stopEverything() {
-    if (video.srcObject) {
+// --- FUNZIONI DI USCITA ---
+async function stopAndExit(save) {
+    // Spegne la telecamera
+    if (cameraActive && video.srcObject) {
         video.srcObject.getTracks().forEach(track => track.stop());
+        cameraActive = null;
     }
+    
+    if (save && shotLog.length > 0) {
+        feedback.innerText = "SALVATAGGIO...";
+        try {
+            await fetch(GOOGLE_SCRIPT_URL, {
+                method: 'POST', mode: 'no-cors',
+                body: JSON.stringify(shotLog)
+            });
+            alert("Sessione salvata su Google Drive!");
+        } catch (e) {
+            alert("Errore salvataggio dati su Drive. Controlla la connessione.");
+        }
+    } else if (save && shotLog.length === 0) {
+        alert("Nessun tiro da salvare.");
+    }
+
     feedback.innerText = "SESSIONE CHIUSA";
-    setTimeout(() => { window.location.href = "about:blank"; }, 500);
+    // Tenta di chiudere la finestra o reindirizza a pagina bianca
+    setTimeout(() => {
+        window.close(); 
+        window.location.href = "about:blank";
+    }, 500);
 }
 
-document.getElementById('btn-save-exit').onclick = async function() {
-    this.innerText = "...";
-    try {
-        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
-        await stopEverything();
-    } catch (e) { alert("Errore invio"); }
+document.getElementById('btn-save-exit').onclick = () => stopAndExit(true);
+document.getElementById('btn-discard-exit').onclick = () => {
+    if (shotLog.length > 0 && !confirm("Sei sicuro di voler uscire? I dati di questa sessione verranno persi.")) {
+        return; // L'utente ha annullato l'uscita
+    }
+    stopAndExit(false);
 };
-
-document.getElementById('btn-discard-exit').onclick = async () => { if(confirm("Esci?")) await stopEverything(); };
 
 </script>
 </body>
