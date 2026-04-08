@@ -64,12 +64,39 @@
 // --- CONFIGURAZIONE ---
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxUGkpdZCXjgT2g0lnLZV0OM8Esyp-Bm0xAXs4Pkvrr2KgaCZezWV3JORo5TgnchQmTcw/exec";
 
+// --- CONFIGURAZIONE SUONI CON SBLOCCO PER IPHONE ---
 const sounds = {
     perfect: new Audio('https://www.soundjay.com/buttons/sounds/button-37.mp3'),
     error_dip: new Audio('https://www.soundjay.com/buttons/sounds/button-10.mp3'),
     error_path: new Audio('https://www.soundjay.com/buttons/sounds/button-16.mp3'),
     error_release: new Audio('https://www.soundjay.com/buttons/sounds/button-4.mp3'),
     error_bio: new Audio('https://www.soundjay.com/buttons/sounds/button-20.mp3')
+};
+
+// Funzione cruciale per sbloccare l'audio su iOS
+function unlockAudio() {
+    for (let key in sounds) {
+        sounds[key].play().then(() => {
+            sounds[key].pause();
+            sounds[key].currentTime = 0;
+        }).catch(e => console.log("Errore sblocco audio:", e));
+    }
+}
+
+// Modifica al pulsante di avvio
+document.getElementById('btn-start').onclick = function() {
+    // 1. SBLOCCA L'AUDIO (Indispensabile per iPhone)
+    unlockAudio();
+    
+    // 2. AVVIA LA CAMERA
+    this.style.display = "none";
+    const camera = new Camera(video, {
+        onFrame: async () => { await pose.send({image: video}); },
+        width: 1280, height: 720, facingMode: 'environment'
+    });
+    camera.start().then(() => { 
+        feedback.innerText = "COACH ATTIVO - AUDIO SBLOCCATO"; 
+    });
 };
 
 let shotLog = [];
