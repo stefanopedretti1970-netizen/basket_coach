@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI Basket Lab - Complete</title>
+    <title>AI Basket Lab - Professional</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
@@ -21,6 +21,7 @@
         #btn-start { background: #ff5722; }
         #btn-save-exit { background: #4CAF50; display: none; }
         #btn-discard-exit { background: #444; }
+        input[type=range] { vertical-align: middle; width: 60px; }
     </style>
 </head>
 <body>
@@ -31,7 +32,8 @@
         <div id="top-left" class="panel">
             GIOCATORE: <input type="text" id="player_name" value="Atleta 1" style="width:70px; background:#222; color:white; border:none;"><br>
             TIRI: <span id="counter" style="color:#00e676; font-weight:bold;">0</span> | 
-            STATO: <span id="st">IDLE</span>
+            STATO: <span id="st">IDLE</span><br>
+            RAGGIO CANESTRO: <input type="range" id="basket_radius" min="10" max="100" value="30">
         </div>
         <div id="feedback">CLICCA SUL FERRO PER CALIBRARE</div>
         <div class="controls">
@@ -43,6 +45,7 @@
 </div>
 
 <script>
+// --- CONFIGURAZIONE DRIVE ---
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxUGkpdZCXjgT2g0lnLZV0OM8Esyp-Bm0xAXs4Pkvrr2KgaCZezWV3JORo5TgnchQmTcw/exec";
 
 // --- AUDIO ---
@@ -67,7 +70,7 @@ const sounds = {
     error_bio: () => { playNote(300, 'triangle', 0.2); setTimeout(()=>playNote(300, 'triangle', 0.2), 150); }
 };
 
-// --- LOGICA CORE ---
+// --- LOGICA ---
 let shotLog = [], state = "IDLE", shotData = {}, lastStateChange = Date.now();
 let canestroPos = null; 
 let pallaInAria = false;
@@ -78,8 +81,8 @@ const video = document.getElementById('input_video');
 const canvas = document.getElementById('output_canvas');
 const ctx = canvas.getContext('2d');
 const feedback = document.getElementById('feedback');
+const radiusInput = document.getElementById('basket_radius');
 
-// Calibrazione canestro al click
 canvas.addEventListener('mousedown', (e) => {
     const rect = canvas.getBoundingClientRect();
     canestroPos = {
@@ -109,8 +112,7 @@ function analyzePose(lm) {
         state = "DIP"; lastStateChange = Date.now();
         shotData = { errors: [], minK: kA, sX: ankle.x, lowestW: wrist.y };
         feedback.innerText = "CARICAMENTO";
-        pallaInAria = false;
-        esitoCanestro = "SBAGLIATO";
+        pallaInAria = false; esitoCanestro = "SBAGLIATO";
     }
 
     if (state === "DIP") {
@@ -139,25 +141,19 @@ function analyzePose(lm) {
                 if (getAngle(shoulder, elbow, wrist) < 150) shotData.errors.push("Braccio corto");
                 if (Math.abs(ankle.x - shotData.sX) < 0.03) shotData.errors.push("No Sway");
                 finalizeShot(eA, shotData.minK);
-            }, 1000);
+            }, 1200);
         }
     }
 }
 
-// Tracking semplificato della palla arancione
-function trackBallNearBasket(results) {
+function trackBall(results) {
     if (!pallaInAria || !canestroPos) return;
     timeoutPalla++;
-    if (timeoutPalla > 60) pallaInAria = false;
-
-    // MediaPipe non traccia la palla, ma possiamo usare il polso come proxy 
-    // finché la palla è vicina alla mano, o cercare un blob arancione (complesso in JS puro).
-    // Usiamo il polso per ora, ma la logica ideale richiede il colore:
+    if (timeoutPalla > 100) pallaInAria = false;
     const wrist = results.poseLandmarks[16];
-    const dist = Math.sqrt(Math.pow(wrist.x - canestroPos.x, 2) + Math.pow(wrist.y - canestroPos.y, 2));
-    
-    // Se il "movimento" passa vicino al canestro calibrato
-    if (dist < 0.08) {
+    const canvasDist = Math.sqrt(Math.pow(wrist.x - canestroPos.x, 2) + Math.pow(wrist.y - canestroPos.y, 2));
+    const normalizedRadius = radiusInput.value / 640; // normalizzazione raggio
+    if (canvasDist < normalizedRadius) {
         esitoCanestro = "SEGNATO";
     }
 }
@@ -172,7 +168,6 @@ function finalizeShot(e, k) {
         else sounds.error_bio();
     }
     feedback.innerHTML = `<span style="color:#ff5722">${res}</span> | <span style="color:#00e676">${esitoCanestro}</span>`;
-    
     shotLog.push({
         player: document.getElementById('player_name').value,
         esito: res,
@@ -181,7 +176,6 @@ function finalizeShot(e, k) {
         angoloGomito: Math.round(e),
         angoloGinocchio: Math.round(k)
     });
-
     document.getElementById('counter').innerText = shotLog.length;
     document.getElementById('btn-save-exit').style.display = "block";
     state = "IDLE";
@@ -197,31 +191,30 @@ pose.onResults(r => {
     if (r.poseLandmarks) {
         drawConnectors(ctx, r.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
         analyzePose(r.poseLandmarks);
-        trackBallNearBasket(r);
+        trackBall(r);
     }
-    // Disegna canestro calibrato
     if (canestroPos) {
         ctx.beginPath();
-        ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, 20, 0, 2 * Math.PI);
+        ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, radiusInput.value, 0, 2 * Math.PI);
         ctx.strokeStyle = "yellow"; ctx.lineWidth = 3; ctx.stroke();
     }
     ctx.restore();
 });
 
 document.getElementById('btn-start').onclick = function() {
-    if (!canestroPos) { alert("Prima calibra il canestro cliccando sul ferro!"); return; }
+    if (!canestroPos) { alert("Calibra il canestro cliccando sul ferro!"); return; }
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     this.style.display = "none";
     const camera = new Camera(video, { onFrame: async () => { await pose.send({image: video}); }, width: 640, height: 480, facingMode: 'environment' });
-    camera.start().then(() => { feedback.innerText = "PRONTO"; });
+    camera.start();
 };
 
 document.getElementById('btn-save-exit').onclick = async function() {
-    this.innerText = "SALVATAGGIO...";
+    this.innerText = "...";
     try {
         await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
         window.location.href = "about:blank";
-    } catch (e) { alert("Errore"); }
+    } catch (e) { alert("Errore"); this.innerText = "SALVA"; }
 };
 document.getElementById('btn-discard-exit').onclick = () => window.location.href = "about:blank";
 </script>
