@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI Basket Lab - Fix 11 Indicatori</title>
+    <title>AI Basket Lab - Fix Definitivo</title>
 
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
@@ -34,9 +34,9 @@
     <div id="ui">
         <div id="top-left" class="panel">
             GIOCATORE: <input type="text" id="player_name" value="Atleta 1" style="width:70px; background:#222; color:white; border:none;"><br>
-            TIRI: <span id="counter">0</span>
+            TIRI: <span id="counter">0</span> | ANG. GIN: <span id="debug_knee">-</span>
         </div>
-        <div id="feedback">AVVIA E INQUADRATI DI PROFILO</div>
+        <div id="feedback">INQUADRATI DI PROFILO E AVVIA</div>
         <div class="controls">
             <button id="btn-start">AVVIA COACH</button>
             <button id="btn-save-exit">SALVA E CHIUDI</button>
@@ -46,7 +46,7 @@
 </div>
 
 <script>
-// --- CONFIGURAZIONE AUDIO ---
+// --- AUDIO ENGINE ---
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
 let audioCtx = null;
 function playSound(freq, type, dur) {
@@ -70,17 +70,17 @@ const sounds = {
     error_bio: () => { playSound(300, 'triangle', 0.2); setTimeout(() => playSound(300, 'triangle', 0.2), 150); }
 };
 
-// --- LOGICA DI ANALISI ---
+// --- CORE LOGIC ---
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxUGkpdZCXjgT2g0lnLZV0OM8Esyp-Bm0xAXs4Pkvrr2KgaCZezWV3JORo5TgnchQmTcw/exec";
 let shotLog = [];
 let state = "IDLE"; 
 let shotData = {};
-let lastProcessedTime = 0;
 
 const video = document.getElementById('input_video');
 const canvas = document.getElementById('output_canvas');
 const ctx = canvas.getContext('2d');
 const feedback = document.getElementById('feedback');
+const debugKnee = document.getElementById('debug_knee');
 
 function getAngle(a, b, c) {
     let rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
@@ -94,15 +94,17 @@ function analyzePose(lm) {
     const kA = getAngle(hip, knee, ankle);
     const eA = getAngle(shoulder, elbow, wrist);
     const wA = getAngle(elbow, wrist, index);
+    
+    debugKnee.innerText = Math.round(kA) + "°";
 
-    // 1. RILEVAMENTO CARICAMENTO (DIP)
-    if (state === "IDLE" && kA < 135) {
+    // 1. INIZIO TIRO (DIP)
+    if (state === "IDLE" && kA < 140) {
         state = "DIP";
         shotData = { 
             errors: [], 
             minK: kA, 
             sX: ankle.x, 
-            bY: wrist.y, 
+            lowWristY: wrist.y, // Memorizza l'altezza minima della palla
             startTime: Date.now() 
         };
         feedback.innerText = "CARICAMENTO...";
@@ -111,18 +113,25 @@ function analyzePose(lm) {
     if (state === "DIP") {
         if (nose.x > foot.x + 0.05) shotData.errors.push("Naso_oltre_le_punte_(Diving)");
         if (getAngle(knee, ankle, foot) < 70) shotData.errors.push("Talloni_piantati_(Heel_Striking)");
-        if (kA > 140) state = "RISE"; // Ginocchia iniziano a estendersi
-        // Sicurezza: reset se passano 4 secondi senza tiro
-        if (Date.now() - shotData.startTime > 4000) state = "IDLE";
+        
+        // Se il polso risale rispetto al punto più basso, passiamo alla risalita
+        if (wrist.y < shotData.lowWristY - 0.05) {
+            state = "RISE";
+        }
+        if (wrist.y > shotData.lowWristY) shotData.lowWristY = wrist.y; // aggiorna punto più basso
+
+        // Reset se bloccato troppo a lungo
+        if (Date.now() - shotData.startTime > 3000) state = "IDLE";
     }
 
-    // 2. RISALITA (PATH)
+    // 2. RISALITA (RISE)
     if (state === "RISE") {
-        // Hitch (Tiro in due tempi)
+        feedback.innerText = "RISALITA...";
+        
         if (wrist.y < nose.y && wrist.y > ear.y && Math.abs(wrist.y - (shotData.lastY || 0)) < 0.001) shotData.errors.push("L'Hitch_(Tiro_in_due_tempi)");
         shotData.lastY = wrist.y;
 
-        // Ball after Body (Sincronismo)
+        // Se le gambe si distendono ma la palla è ancora bassa
         if (kA > 165 && wrist.y > nose.y) shotData.errors.push("Ball_after_Body_(Sincronismo_errato)");
 
         // Trigger Rilascio (Braccio si stende)
@@ -134,7 +143,7 @@ function analyzePose(lm) {
         }
     }
 
-    // 3. RILASCIO & FOLLOW THROUGH
+    // 3. RILASCIO
     if (state === "RELEASE") {
         if (wA < 150) shotData.errors.push("Angolo_del_Polso_piatto");
 
@@ -144,8 +153,8 @@ function analyzePose(lm) {
                 if (Math.abs(ankle.x - shotData.sX) < 0.03) shotData.errors.push("Mancanza_di_Sway_(Atterraggio_rigido)");
                 finalizeShot(eA, shotData.minK, Math.abs(ankle.x - shotData.sX));
             }
-        }, 1000);
-        state = "WAITING_FINALIZE";
+        }, 800);
+        state = "WAIT_FOR_RESET";
     }
 }
 
@@ -157,7 +166,7 @@ function finalizeShot(eA, kA, sway) {
         sounds.perfect();
         feedback.innerHTML = "<span style='color:#00e676'>PERFETTO!</span>";
     } else {
-        if (res.match(/Naso|Talloni|Palla/)) sounds.error_dip();
+        if (res.match(/Naso|Talloni/)) sounds.error_dip();
         else if (res.match(/Hitch|Ball|Cata/)) sounds.error_path();
         else if (res.match(/Gomito|Short|Sway/)) sounds.error_release();
         else sounds.error_bio();
@@ -176,22 +185,19 @@ function finalizeShot(eA, kA, sway) {
     document.getElementById('counter').innerText = shotLog.length;
     document.getElementById('btn-save-exit').style.display = "block";
     
-    // Reset totale per il prossimo tiro
     setTimeout(() => { 
         state = "IDLE"; 
-        if (state === "IDLE") feedback.innerText = "PRONTO";
+        feedback.innerText = "PRONTO";
     }, 2000);
 }
 
-// --- MEDIAPIPE SETUP ---
+// --- MEDIAPIPE ---
 const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
 pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
 
 pose.onResults(r => {
     if (!r.image) return;
-    if (canvas.width !== r.image.width) {
-        canvas.width = r.image.width; canvas.height = r.image.height;
-    }
+    canvas.width = r.image.width; canvas.height = r.image.height;
     ctx.save();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(r.image, 0, 0, canvas.width, canvas.height);
@@ -214,7 +220,7 @@ document.getElementById('btn-start').onclick = function() {
 };
 
 document.getElementById('btn-save-exit').onclick = async function() {
-    this.innerText = "SALVATAGGIO...";
+    this.innerText = "...";
     try {
         await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
         window.location.href = "about:blank";
