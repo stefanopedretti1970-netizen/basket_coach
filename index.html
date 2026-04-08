@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI Basket Lab Pro - Sync & Exit</title>
+    <title>AI Basket Lab - Reliable Audio Edition</title>
 
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
@@ -14,31 +14,18 @@
         #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
         video { position: absolute; width: 1px; height: 1px; opacity: 0; }
         canvas { width: 100vw; height: 100vh; object-fit: contain; background: #000; }
-
         #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
         .panel { position: absolute; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 8px; pointer-events: auto; }
         #top-left { top: 10px; left: 10px; font-size: 14px; }
-        #feedback { position: absolute; top: 40%; width: 100%; text-align: center; font-size: 2rem; font-weight: bold; color: #ff5722; text-shadow: 2px 2px 8px #000; }
-        
-        .controls { position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 10px; pointer-events: auto; padding: 0 10px; }
-        button { padding: 12px 18px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; }
-        
+        #feedback { position: absolute; top: 40%; width: 100%; text-align: center; font-size: 2.5rem; font-weight: bold; color: #ff5722; text-shadow: 2px 2px 8px #000; }
+        .controls { position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 10px; pointer-events: auto; }
+        button { padding: 15px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 16px; }
         #btn-start { background: #ff5722; color: white; }
         #btn-save-exit { background: #4CAF50; color: white; display: none; }
         #btn-discard-exit { background: #555; color: white; }
-        
-        /* Overlay per chiusura */
-        #exit-screen { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 9999; justify-content: center; align-items: center; text-align: center; }
     </style>
 </head>
 <body>
-
-<div id="exit-screen">
-    <div>
-        <h1>SESSIONE TERMINATA</h1>
-        <p>Puoi chiudere questa scheda del browser.</p>
-    </div>
-</div>
 
 <div id="container">
     <video id="input_video" playsinline muted autoplay></video>
@@ -49,56 +36,49 @@
             GIOCATORE: <input type="text" id="player_name" value="Atleta 1" style="width:80px; background:#333; color:white; border:none; padding:3px;"><br>
             TIRI: <span id="counter">0</span>
         </div>
-
-        <div id="feedback">RUOTA IN LANDSCAPE E AVVIA</div>
-
+        <div id="feedback">ATTIVA AUDIO E AVVIA</div>
         <div class="controls">
             <button id="btn-start">AVVIA COACH</button>
             <button id="btn-save-exit">SALVA E CHIUDI</button>
-            <button id="btn-discard-exit">ESCI SENZA SALVARE</button>
+            <button id="btn-discard-exit">ESCI</button>
         </div>
     </div>
 </div>
 
 <script>
-// --- CONFIGURAZIONE ---
-const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxUGkpdZCXjgT2g0lnLZV0OM8Esyp-Bm0xAXs4Pkvrr2KgaCZezWV3JORo5TgnchQmTcw/exec";
+// --- MOTORE AUDIO INTERNO (WEB AUDIO API) ---
+// Questo sostituisce i file MP3 esterni
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
 
-// --- CONFIGURAZIONE SUONI CON SBLOCCO PER IPHONE ---
-const sounds = {
-    perfect: new Audio('https://www.soundjay.com/buttons/sounds/button-37.mp3'),
-    error_dip: new Audio('https://www.soundjay.com/buttons/sounds/button-10.mp3'),
-    error_path: new Audio('https://www.soundjay.com/buttons/sounds/button-16.mp3'),
-    error_release: new Audio('https://www.soundjay.com/buttons/sounds/button-4.mp3'),
-    error_bio: new Audio('https://www.soundjay.com/buttons/sounds/button-20.mp3')
-};
-
-// Funzione cruciale per sbloccare l'audio su iOS
-function unlockAudio() {
-    for (let key in sounds) {
-        sounds[key].play().then(() => {
-            sounds[key].pause();
-            sounds[key].currentTime = 0;
-        }).catch(e => console.log("Errore sblocco audio:", e));
-    }
+function playSound(frequency, type, duration) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    
+    osc.type = type; // 'sine', 'square', 'triangle', 'sawtooth'
+    osc.frequency.setValueAtTime(frequency, audioCtx.currentTime);
+    
+    gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+    
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
 }
 
-// Modifica al pulsante di avvio
-document.getElementById('btn-start').onclick = function() {
-    // 1. SBLOCCA L'AUDIO (Indispensabile per iPhone)
-    unlockAudio();
-    
-    // 2. AVVIA LA CAMERA
-    this.style.display = "none";
-    const camera = new Camera(video, {
-        onFrame: async () => { await pose.send({image: video}); },
-        width: 1280, height: 720, facingMode: 'environment'
-    });
-    camera.start().then(() => { 
-        feedback.innerText = "COACH ATTIVO - AUDIO SBLOCCATO"; 
-    });
+const sounds = {
+    perfect: () => { playSound(880, 'sine', 0.5); setTimeout(() => playSound(1046, 'sine', 0.5), 100); },
+    error_dip: () => playSound(200, 'square', 0.4),
+    error_path: () => playSound(400, 'sawtooth', 0.4),
+    error_release: () => playSound(150, 'sine', 0.6),
+    error_bio: () => { playSound(300, 'triangle', 0.2); setTimeout(() => playSound(300, 'triangle', 0.2), 150); }
 };
 
+// --- CONFIGURAZIONE LOGICA ---
+const GOOGLE_SCRIPT_URL = "IL_TUO_URL_DI_GOOGLE_SCRIPT";
 let shotLog = [];
 let state = "IDLE"; 
 let shotData = {};
@@ -111,16 +91,6 @@ function getAngle(a, b, c) {
     let rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
     let ang = Math.abs(rad * 180 / Math.PI);
     return ang > 180 ? 360 - ang : ang;
-}
-
-// Funzione universale di uscita
-function terminateApp() {
-    document.getElementById('exit-screen').style.display = 'flex';
-    setTimeout(() => {
-        window.close();
-        // Fallback per browser che bloccano window.close
-        window.location.href = "about:blank";
-    }, 1000);
 }
 
 function analyzePose(lm) {
@@ -170,13 +140,13 @@ function finalizeShot(eAngle, kAngle, sway) {
     let res = "PERFETTO";
     if (shotData.errors.length > 0) {
         res = shotData.errors[0];
-        if (["DIVING", "HEEL_STRIKING"].includes(res)) sounds.error_dip.play();
-        else if (["HITCH", "BALL_AFTER_BODY", "CATAPULTA"].includes(res)) sounds.error_path.play();
-        else if (["GOMITO_BASSO", "SHORT_ARMING"].includes(res)) sounds.error_release.play();
-        else sounds.error_bio.play();
+        if (["DIVING", "HEEL_STRIKING"].includes(res)) sounds.error_dip();
+        else if (["HITCH", "BALL_AFTER_BODY", "CATAPULTA"].includes(res)) sounds.error_path();
+        else if (["GOMITO_BASSO", "SHORT_ARMING"].includes(res)) sounds.error_release();
+        else sounds.error_bio();
         feedback.innerHTML = `<span style="color:#ff3d00">${res}</span>`;
     } else {
-        sounds.perfect.play();
+        sounds.perfect();
         feedback.innerHTML = `<span style="color:#00e676">PERFETTO!</span>`;
     }
 
@@ -206,13 +176,18 @@ pose.onResults(results => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
     if (results.poseLandmarks) {
-        drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+        drawConnectors(ctx, results.poseLandmarks, mp_pose.POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
         analyzePose(results.poseLandmarks);
     }
     ctx.restore();
 });
 
 document.getElementById('btn-start').onclick = function() {
+    // Inizializza AudioContext al click dell'utente (obbligatorio su iOS)
+    if (!audioCtx) {
+        audioCtx = new AudioCtx();
+    }
+    
     this.style.display = "none";
     const camera = new Camera(video, {
         onFrame: async () => { await pose.send({image: video}); },
@@ -221,31 +196,16 @@ document.getElementById('btn-start').onclick = function() {
     camera.start().then(() => { feedback.innerText = "COACH ATTIVO"; });
 };
 
-// --- LOGICA USCITA ---
-
-// 1. Salva e Chiudi
 document.getElementById('btn-save-exit').onclick = async function() {
     this.innerText = "SALVATAGGIO...";
-    this.disabled = true;
     try {
-        await fetch(GOOGLE_SCRIPT_URL, {
-            method: 'POST', mode: 'no-cors',
-            body: JSON.stringify(shotLog)
-        });
-        terminateApp();
-    } catch (e) {
-        alert("Errore salvataggio. Riprova.");
-        this.innerText = "SALVA E CHIUDI";
-        this.disabled = false;
-    }
+        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
+        alert("Sessione Salvata. Puoi chiudere la scheda.");
+        window.location.reload();
+    } catch (e) { alert("Errore salvataggio."); }
 };
 
-// 2. Esci senza salvare
-document.getElementById('btn-discard-exit').onclick = function() {
-    if (confirm("Sei sicuro di voler uscire? I dati di questa sessione andranno persi.")) {
-        terminateApp();
-    }
-};
+document.getElementById('btn-discard-exit').onclick = () => window.location.reload();
 
 </script>
 </body>
