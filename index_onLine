@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Basket Lab - Professional</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <style>
+        body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; }
+        #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+        video { position: absolute; width: 1px; height: 1px; opacity: 0; }
+        canvas { width: 100vw; height: 100vh; object-fit: contain; cursor: crosshair; }
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .panel { position: absolute; background: rgba(0,0,0,0.7); padding: 8px; border-radius: 8px; pointer-events: auto; font-size: 11px; }
+        #top-left { top: 10px; left: 10px; }
+        #feedback { position: absolute; top: 35%; width: 100%; text-align: center; font-size: 1.8rem; font-weight: bold; color: #ff5722; text-shadow: 2px 2px 5px #000; }
+        .controls { position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 10px; pointer-events: auto; }
+        button { padding: 15px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 13px; color: white; }
+        #btn-start { background: #ff5722; }
+        #btn-save-exit { background: #4CAF50; display: none; }
+        #btn-discard-exit { background: #444; }
+        input[type=range] { vertical-align: middle; width: 60px; }
+    </style>
+</head>
+<body>
+<div id="container">
+    <video id="input_video" playsinline muted autoplay></video>
+    <canvas id="output_canvas"></canvas>
+    <div id="ui">
+        <div id="top-left" class="panel">
+            GIOCATORE: <input type="text" id="player_name" value="Atleta 1" style="width:70px; background:#222; color:white; border:none;"><br>
+            TIRI: <span id="counter" style="color:#00e676; font-weight:bold;">0</span> | 
+            STATO: <span id="st">IDLE</span><br>
+            RAGGIO CANESTRO: <input type="range" id="basket_radius" min="10" max="100" value="30">
+        </div>
+        <div id="feedback">CLICCA SUL FERRO PER CALIBRARE</div>
+        <div class="controls">
+            <button id="btn-start">AVVIA COACH</button>
+            <button id="btn-save-exit">SALVA E CHIUDI</button>
+            <button id="btn-discard-exit">ESCI</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// --- CONFIGURAZIONE DRIVE ---
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyXhbEozct9qd-fnWcUmUhW9b5aMosom_G1hW2Ww5R3m-AMKkZfzs4jfT63vW_ZOQ2cPQ/exec";
+
+// --- AUDIO ---
+let audioCtx = null;
+function playNote(freq, type, dur, vol=0.1) {
+    if (!audioCtx) return;
+    try {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
+        o.type = type; o.frequency.value = freq;
+        g.gain.setValueAtTime(vol, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start(); o.stop(audioCtx.currentTime + dur);
+    } catch(e) {}
+}
+const sounds = {
+    perfect: () => { playNote(880, 'sine', 0.4); setTimeout(()=>playNote(1046,'sine',0.4),100); },
+    error_dip: () => playNote(180, 'square', 0.4, 0.2),
+    error_path: () => playNote(400, 'sawtooth', 0.4, 0.1),
+    error_release: () => playNote(150, 'sine', 0.5, 0.2),
+    error_bio: () => { playNote(300, 'triangle', 0.2); setTimeout(()=>playNote(300, 'triangle', 0.2), 150); }
+};
+
+// --- LOGICA ---
+let shotLog = [], state = "IDLE", shotData = {}, lastStateChange = Date.now();
+let canestroPos = null; 
+let pallaInAria = false;
+let esitoCanestro = "SBAGLIATO";
+let timeoutPalla = 0;
+
+const video = document.getElementById('input_video');
+const canvas = document.getElementById('output_canvas');
+const ctx = canvas.getContext('2d');
+const feedback = document.getElementById('feedback');
+const radiusInput = document.getElementById('basket_radius');
+
+canvas.addEventListener('mousedown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    canestroPos = {
+        x: (e.clientX - rect.left) / rect.width,
+        y: (e.clientY - rect.top) / rect.height
+    };
+    feedback.innerText = "CANESTRO CALIBRATO! PREMI AVVIA";
+});
+
+function getAngle(a, b, c) {
+    let rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+    let ang = Math.abs(rad * 180 / Math.PI);
+    return ang > 180 ? 360 - ang : ang;
+}
+
+function analyzePose(lm) {
+    const nose=lm[0], shoulder=lm[12], elbow=lm[14], wrist=lm[16], hip=lm[24], knee=lm[26], ankle=lm[28], foot=lm[32], ear=lm[8], index=lm[20];
+    const kA = getAngle(hip, knee, ankle);
+    const eA = getAngle(shoulder, elbow, wrist);
+    const wA = getAngle(elbow, wrist, index);
+
+    if (state !== "IDLE" && (Date.now() - lastStateChange > 4000)) {
+        state = "IDLE"; feedback.innerText = "PRONTO"; return;
+    }
+
+    if (state === "IDLE" && kA < 145) {
+        state = "DIP"; lastStateChange = Date.now();
+        shotData = { errors: [], minK: kA, sX: ankle.x, lowestW: wrist.y };
+        feedback.innerText = "CARICAMENTO";
+        pallaInAria = false; esitoCanestro = "SBAGLIATO";
+    }
+
+    if (state === "DIP") {
+        if (nose.x > foot.x + 0.05) shotData.errors.push("Naso oltre punte");
+        if (getAngle(knee, ankle, foot) < 70) shotData.errors.push("Peso talloni");
+        if (Math.abs(wrist.y - shotData.lowestW) < 0.0005) shotData.errors.push("Palla ferma petto");
+        if (wrist.y > shotData.lowestW) shotData.lowestW = wrist.y;
+        if (kA > shotData.minK + 5 || wrist.y < shotData.lowestW - 0.02) {
+            state = "RISE"; lastStateChange = Date.now();
+            feedback.innerText = "RISALITA";
+        }
+    }
+
+    if (state === "RISE") {
+        if (Math.abs(wrist.y - (shotData.lastY || 0)) < 0.0005 && wrist.y < nose.y) shotData.errors.push("Hitch");
+        shotData.lastY = wrist.y;
+        if (kA > 165 && wrist.y > nose.y) shotData.errors.push("Palla dopo corpo");
+        if (eA > 155) {
+            state = "RELEASE"; lastStateChange = Date.now();
+            pallaInAria = true; timeoutPalla = 0;
+            if (elbow.y > nose.y) shotData.errors.push("Gomito basso");
+            if (wrist.x < ear.x) shotData.errors.push("Catapulta");
+            if (nose.x > shoulder.x + 0.06) shotData.errors.push("Mento avanti");
+            if (wA < 150) shotData.errors.push("Polso piatto");
+            setTimeout(() => {
+                if (getAngle(shoulder, elbow, wrist) < 150) shotData.errors.push("Braccio corto");
+                if (Math.abs(ankle.x - shotData.sX) < 0.03) shotData.errors.push("No Sway");
+                finalizeShot(eA, shotData.minK);
+            }, 1200);
+        }
+    }
+}
+
+function trackBall(results) {
+    if (!pallaInAria || !canestroPos) return;
+    timeoutPalla++;
+    if (timeoutPalla > 100) pallaInAria = false;
+    const wrist = results.poseLandmarks[16];
+    const canvasDist = Math.sqrt(Math.pow(wrist.x - canestroPos.x, 2) + Math.pow(wrist.y - canestroPos.y, 2));
+    const normalizedRadius = radiusInput.value / 640; // normalizzazione raggio
+    if (canvasDist < normalizedRadius) {
+        esitoCanestro = "SEGNATO";
+    }
+}
+
+function finalizeShot(e, k) {
+    let res = shotData.errors.length > 0 ? shotData.errors[0] : "PERFETTO";
+    if (res === "PERFETTO") sounds.perfect();
+    else {
+        if (res.match(/Naso|Peso|Palla/)) sounds.error_dip();
+        else if (res.match(/Hitch|corpo|Catapulta/)) sounds.error_path();
+        else if (res.match(/Gomito|corto|Sway/)) sounds.error_release();
+        else sounds.error_bio();
+    }
+    feedback.innerHTML = `<span style="color:#ff5722">${res}</span> | <span style="color:#00e676">${esitoCanestro}</span>`;
+    shotLog.push({
+        player: document.getElementById('player_name').value,
+        esito: res,
+        canestro: esitoCanestro,
+        dettagli: shotData.errors.join(", "),
+        angoloGomito: Math.round(e),
+        angoloGinocchio: Math.round(k)
+    });
+    document.getElementById('counter').innerText = shotLog.length;
+    document.getElementById('btn-save-exit').style.display = "block";
+    state = "IDLE";
+}
+
+const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+pose.onResults(r => {
+    if (!r.image) return;
+    canvas.width = r.image.width; canvas.height = r.image.height;
+    ctx.save(); ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(r.image, 0,0,canvas.width,canvas.height);
+    if (r.poseLandmarks) {
+        drawConnectors(ctx, r.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+        analyzePose(r.poseLandmarks);
+        trackBall(r);
+    }
+    if (canestroPos) {
+        ctx.beginPath();
+        ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, radiusInput.value, 0, 2 * Math.PI);
+        ctx.strokeStyle = "yellow"; ctx.lineWidth = 3; ctx.stroke();
+    }
+    ctx.restore();
+});
+
+document.getElementById('btn-start').onclick = function() {
+    if (!canestroPos) { alert("Calibra il canestro cliccando sul ferro!"); return; }
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    this.style.display = "none";
+    const camera = new Camera(video, { onFrame: async () => { await pose.send({image: video}); }, width: 640, height: 480, facingMode: 'environment' });
+    camera.start();
+};
+
+document.getElementById('btn-save-exit').onclick = async function() {
+    this.innerText = "...";
+    try {
+        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
+        window.location.href = "about:blank";
+    } catch (e) { alert("Errore"); this.innerText = "SALVA"; }
+};
+document.getElementById('btn-discard-exit').onclick = () => window.location.href = "about:blank";
+</script>
+</body>
+</html>
