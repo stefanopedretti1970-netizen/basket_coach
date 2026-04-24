@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Basket Lab Pro - Clean Analysis</title>
+    <title>AI Basket Lab Pro - Analisi Revisionata</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <style>
         body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; }
         #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
-        video { position: absolute; width: 1px; height: 1px; opacity: 0; }
+        video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
         canvas { width: 100vw; height: 100vh; object-fit: contain; cursor: crosshair; background: #111; }
         .ui-panel { position: absolute; background: rgba(0,0,0,0.9); padding: 15px; border-radius: 12px; border: 1px solid #444; pointer-events: auto; z-index: 100; }
         #top-left { top: 15px; left: 15px; width: 280px; }
@@ -29,7 +29,7 @@
     <canvas id="output_canvas"></canvas>
     <canvas id="crop_canvas"></canvas>
     
-    <div id="feedback">CARICA UN VIDEO</div>
+    <div id="feedback">1. CARICA VIDEO</div>
 
     <div id="top-left" class="ui-panel">
         <h3 style="margin:0 0 10px 0; color:#ff5722; font-size: 1rem;">COACH IA FEEDBACK</h3>
@@ -38,11 +38,11 @@
             <div class="stat-row">Stato: <span id="cur-phase" class="val">IDLE</span></div>
         </div>
         <hr style="border:0; border-top:1px solid #444; margin:10px 0;">
-        <div id="coach-advice" style="font-size:0.75rem; color:#00e676;">Seleziona canestro e giocatore.</div>
+        <div id="coach-advice" style="font-size:0.75rem; color:#00e676;">Seleziona video e calibra.</div>
     </div>
 
     <div id="controls" class="ui-panel">
-        <label id="lbl-upload" class="btn-label" for="video_file">SCEGLI FILE</label>
+        <label id="lbl-upload" class="btn-label" for="video_file">CARICA VIDEO</label>
         <input type="file" id="video_file" accept="video/*">
         <button id="btn-start" style="display:none;">AVVIA ANALISI</button>
         <button id="btn-save" style="display:none; background:#4CAF50;">SALVA REPORT</button>
@@ -51,6 +51,7 @@
 </div>
 
 <script>
+// --- CONFIGURAZIONE ---
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby8fNzStDBZFsNYEmH7w_f2kLEgBjl3LQGcQd52T2tAumqui6yKQeH7gwD7rOn_B42lBA/exec";
 
 const video = document.getElementById('input_video');
@@ -63,8 +64,33 @@ const feedback = document.getElementById('feedback');
 let canestroPos = null, playerX = null, calibrationStep = 0, isAnalyzing = false;
 let shotLog = [], state = "IDLE", currentShot = null, lastShotTime = 0;
 let roi = { x: 0, width: 1 };
+let frameCounter = 0; // Per gestire il follow-through
 
-// --- HELPERS ---
+// --- FUNZIONI DI DISEGNO ---
+function drawScene(image, landmarks = null) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (image) ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    else ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    if (canestroPos) {
+        ctx.beginPath();
+        ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, 20, 0, 2 * Math.PI);
+        ctx.strokeStyle = "yellow"; ctx.lineWidth = 5; ctx.stroke();
+    }
+
+    if (!isAnalyzing && playerX && calibrationStep === 2) {
+        ctx.fillStyle = "rgba(0, 230, 118, 0.3)";
+        ctx.fillRect(roi.x * canvas.width, 0, roi.width * canvas.width, canvas.height);
+    }
+
+    if (landmarks) {
+        drawConnectors(ctx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+    }
+}
+
+// --- LOGICA BIOMECCANICA ---
 function getAngle(a, b, c) {
     if(!a || !b || !c || a.visibility < 0.5) return null;
     let ang = Math.abs((Math.atan2(c.y-b.y, c.x-b.x) - Math.atan2(a.y-b.y, a.x-b.x)) * 180 / Math.PI);
@@ -79,21 +105,18 @@ function getVerticalAngle(top, bottom) {
 function getMetricStatus(value, type) {
     switch(type) {
         case 'knee_dip': 
-            if (value >= 120 && value <= 145) return { label: "OTTIMO", color: "#00e676", advice: "Ottimo uso gambe." };
-            if (value < 120) return { label: "ECCESSIVO", color: "#ff1744", advice: "Troppo basso." };
-            return { label: "SCARSO", color: "#ffea00", advice: "Usa più gambe." };
+            if (value >= 120 && value <= 145) return { label: "OTTIMO", color: "#00e676", advice: "Gambe OK." };
+            return { label: "RIVEDERE", color: "#ffea00", advice: "Controlla profondità." };
         case 'fingers': 
-            return value === "SI" ? { label: "SI", color: "#00e676", advice: "Mano nel barattolo OK." } 
-                                  : { label: "NO", color: "#ff1744", advice: "Spezza il polso finale!" };
+            return value === "SI" ? { label: "SI", color: "#00e676", advice: "Ottimo follow-through." } 
+                                  : { label: "NO", color: "#ff1744", advice: "Spezza il polso!" };
         default: return { label: "OK", color: "#fff", advice: "" };
     }
 }
 
-// --- ANALISI ---
 function analyzePose(lm) {
     const nose=lm[0], shoulder=lm[12], elbow=lm[14], wrist=lm[16], hip=lm[24], knee=lm[26], ankle=lm[28], foot=lm[32], index=lm[20];
     const kA = getAngle(hip, knee, ankle), eA = getAngle(shoulder, elbow, wrist);
-    
     if (kA === null || eA === null) return;
 
     if (state === "IDLE" && kA < 140 && (video.currentTime - lastShotTime > 1.2)) {
@@ -105,21 +128,41 @@ function analyzePose(lm) {
         };
         document.getElementById('cur-phase').innerText = "DIP";
     }
-    if (state === "DIP" && kA > currentShot.maxK + 7) state = "RISE";
+    
+    if (state === "DIP") {
+        if (kA < currentShot.maxK) currentShot.maxK = kA;
+        if (kA > currentShot.maxK + 7) state = "RISE";
+    }
+
     if (state === "RISE") {
-        if (wrist.y <= nose.y && !currentShot.set) currentShot.set = { pos: wrist.y < nose.y ? "Sopra" : "Sotto", eH: elbow.y.toFixed(2), eA };
+        if (wrist.y <= nose.y && !currentShot.set) {
+            currentShot.set = { pos: wrist.y < nose.y ? "Sopra" : "Sotto", eH: elbow.y.toFixed(2), eA };
+        }
         if (eA > 155) {
-            state = "RELEASE";
+            state = "RELEASE_PENDING";
+            currentShot.tempRelAngle = eA;
+            frameCounter = 0; // Inizia il conto alla rovescia per il follow-through
+        }
+    }
+
+    if (state === "RELEASE_PENDING") {
+        frameCounter++;
+        if (frameCounter > 15) { // Aspetta 15 frame (~0.5sec) dopo il rilascio
+            state = "RELEASE_COMPLETE";
             const fingerVal = getAngle(elbow, wrist, index) < 160 ? "SI" : "NO";
             const kneeStat = getMetricStatus(currentShot.dip.kA, 'knee_dip');
             const fingerStat = getMetricStatus(fingerVal, 'fingers');
-            
+
             shotLog.push({
-                timestamp: currentShot.t, dip: currentShot.dip, rise: { kA_at_rise: currentShot.maxK },
+                timestamp: currentShot.t,
+                dip: currentShot.dip,
+                rise: { kA_at_rise: currentShot.maxK },
                 set: currentShot.set || { pos: "N/D", eH: 0, eA: 0 },
                 release: { 
-                    angolo_rilascio: eA, sway: (currentShot.startX - ankle.x).toFixed(3), 
-                    estensione_braccio: eA > 168 ? "Completa" : "Corta", dita_barattolo: fingerVal 
+                    angolo_rilascio: currentShot.tempRelAngle, 
+                    sway: (currentShot.startX - ankle.x).toFixed(3), 
+                    estensione_braccio: currentShot.tempRelAngle > 168 ? "Completa" : "Corta", 
+                    dita_barattolo: fingerVal 
                 },
                 commento_coach: `${kneeStat.label} | ${fingerStat.advice}`
             });
@@ -127,7 +170,8 @@ function analyzePose(lm) {
             document.getElementById('shot-count').innerText = shotLog.length;
             document.getElementById('coach-advice').innerText = fingerStat.advice;
             document.getElementById('btn-save').style.display = "block";
-            state = "IDLE"; lastShotTime = video.currentTime;
+            state = "IDLE"; 
+            lastShotTime = video.currentTime;
         }
     }
 }
@@ -137,34 +181,24 @@ const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@medi
 pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5 });
 
 pose.onResults(r => {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
-    // Disegna la banda verde SOLO durante la calibrazione, non durante l'analisi
-    if (!isAnalyzing && playerX && calibrationStep === 2) {
-        ctx.fillStyle = "rgba(0, 230, 118, 0.2)";
-        ctx.fillRect(roi.x * canvas.width, 0, roi.width * canvas.width, canvas.height);
-    }
-
     if (r.poseLandmarks) {
-        // Ricalibra coordinate sniper
         r.poseLandmarks.forEach(lm => { lm.x = lm.x * roi.width + roi.x; });
-        drawConnectors(ctx, r.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
         analyzePose(r.poseLandmarks);
     }
+    drawScene(r.image, r.poseLandmarks);
 });
 
-// Gestione Video
+// --- GESTIONE INPUT ---
 document.getElementById('video_file').onchange = (e) => {
-    video.src = URL.createObjectURL(e.target.files[0]);
-    video.onloadeddata = () => {
-        video.currentTime = 0.1;
-        setTimeout(() => {
-            canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            calibrationStep = 1; feedback.innerText = "1. CLICCA SUL CANESTRO";
-        }, 500);
-    };
+    const file = e.target.files[0];
+    video.src = URL.createObjectURL(file);
+    video.onloadeddata = () => { video.currentTime = 0.1; };
+};
+
+video.onseeked = () => {
+    drawScene();
+    if (calibrationStep === 0) { calibrationStep = 1; feedback.innerText = "1. CLICCA SUL CANESTRO"; }
+    if (isAnalyzing) runAnalysis();
 };
 
 canvas.addEventListener('mousedown', (e) => {
@@ -175,34 +209,27 @@ canvas.addEventListener('mousedown', (e) => {
 
     if (calibrationStep === 1) {
         canestroPos = {x, y}; calibrationStep = 2;
-        feedback.innerText = "2. ISOLA IL TIRATORE (CLICCA SU DI LUI)";
+        feedback.innerText = "2. CLICCA SUL TIRATORE";
+        drawScene();
     } else if (calibrationStep === 2) {
-        playerX = x; roi.width = 0.45; roi.x = Math.max(0, x - roi.width/2);
+        playerX = x; roi.width = 0.50; roi.x = Math.max(0, x - roi.width/2);
         feedback.innerText = "PRONTO. AVVIA ANALISI.";
         document.getElementById('btn-start').style.display = "block";
-        // Disegna la banda per conferma selezione
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = "rgba(0, 230, 118, 0.2)";
-        ctx.fillRect(roi.x * canvas.width, 0, roi.width * canvas.width, canvas.height);
+        drawScene();
     }
 });
 
 async function runAnalysis() {
     if (video.ended) {
         feedback.innerText = "ANALISI COMPLETATA";
-        document.getElementById('btn-save').style.display = "block";
         return;
     }
-    
     cropCanvas.width = video.videoWidth * roi.width;
     cropCanvas.height = video.videoHeight;
     cropCtx.drawImage(video, roi.x * video.videoWidth, 0, roi.width * video.videoWidth, video.videoHeight, 0, 0, cropCanvas.width, cropCanvas.height);
-    
     await pose.send({image: cropCanvas});
-    video.currentTime += (1/30);
+    video.currentTime += (1/60); // Incremento più fine per video HD/60fps
 }
-
-video.onseeked = () => { if (isAnalyzing) runAnalysis(); };
 
 document.getElementById('btn-start').onclick = function() {
     isAnalyzing = true;
@@ -210,16 +237,15 @@ document.getElementById('btn-start').onclick = function() {
     document.getElementById('lbl-upload').style.display = "none";
     video.currentTime = 0;
     feedback.innerText = "ANALISI IN CORSO...";
-    runAnalysis();
 };
 
 document.getElementById('btn-save').onclick = async function() {
     this.innerText = "INVIO...";
     try {
         await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
-        alert("Report inviato a Google Sheets!");
+        alert("Dati inviati correttamente!");
         this.innerText = "SALVATO";
-    } catch(e) { alert("Errore"); this.innerText = "RIPROVA"; }
+    } catch(e) { alert("Errore connessione"); this.innerText = "RIPROVA"; }
 };
 </script>
 </body>
