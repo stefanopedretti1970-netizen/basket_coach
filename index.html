@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Basket Lab Pro - Ultra Stability v3</title>
+    <title>AI Basket Lab Pro - Clinical v4</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <style>
@@ -18,7 +18,6 @@
         button, .btn-label { background: #ff5722; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 13px; }
         #btn-save { background: #4CAF50; display: none; }
         #btn-exit { background: #d32f2f; }
-        #btn-reset { background: #555; }
         input[type="file"] { display: none; }
         .stat-row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 0.8rem; border-bottom: 1px solid #333; padding-bottom: 2px; }
         .val { color: #00e676; font-weight: bold; }
@@ -35,13 +34,13 @@
     <div id="feedback">1. CARICA VIDEO</div>
 
     <div id="top-left" class="ui-panel">
-        <h3 style="margin:0 0 10px 0; color:#ff5722; font-size: 1rem;">ULTRA-STABLE ANALYTICS</h3>
+        <h3 style="margin:0 0 10px 0; color:#ff5722; font-size: 1rem;">NBA ANALYTICS v4</h3>
         <div id="live-status">
             <div class="stat-row">Tiri Rilevati: <span id="shot-count" class="val">0</span></div>
-            <div class="stat-row">Stato: <span id="cur-phase" class="val">IDLE</span></div>
+            <div class="stat-row">Sincronismo: <span id="sync-val" class="val">-</span></div>
         </div>
         <hr style="border:0; border-top:1px solid #444; margin:10px 0;">
-        <div id="coach-advice" style="font-size:0.75rem; color:#00e676;">Filtro anti-jitter attivo.</div>
+        <div id="coach-advice" style="font-size:0.75rem; color:#00e676;">Sistema pronto.</div>
     </div>
 
     <div id="controls" class="ui-panel">
@@ -49,8 +48,7 @@
         <input type="file" id="video_file" accept="video/*">
         <button id="btn-start" style="display:none;">AVVIA</button>
         <button id="btn-save">SALVA</button>
-        <button id="btn-reset" onclick="location.reload()">RESET</button>
-        <button id="btn-exit" onclick="window.location.href='about:blank'">ESCI</button>
+        <button id="btn-exit" onclick="window.location.replace('about:blank')">ESCI</button>
     </div>
 </div>
 
@@ -67,139 +65,127 @@ const feedback = document.getElementById('feedback');
 let canestroPos = null, playerX = null, calibrationStep = 0, isAnalyzing = false;
 let shotLog = [], state = "IDLE", currentShot = null, lastShotTime = 0;
 let roi = { x: 0, width: 1 };
-let frameCounter = 0;
 let releaseBuffer = [];
+let frameCounter = 0;
 
-// --- FILTRI DI STABILIZZAZIONE ---
 function getAngle(a, b, c) {
-    if(!a || !b || !c || a.visibility < 0.65) return null;
-    let v1 = { x: a.x - b.x, y: a.y - b.y };
-    let v2 = { x: c.x - b.x, y: c.y - b.y };
+    if(!a || !b || !c || a.visibility < 0.5) return null;
+    let v1 = { x: a.x - b.x, y: a.y - b.y }, v2 = { x: c.x - b.x, y: c.y - b.y };
     let dot = v1.x * v2.x + v1.y * v2.y;
-    let mag1 = Math.sqrt(v1.x**2 + v1.y**2);
-    let mag2 = Math.sqrt(v2.x**2 + v2.y**2);
+    let mag1 = Math.sqrt(v1.x**2 + v1.y**2), mag2 = Math.sqrt(v2.x**2 + v2.y**2);
     let ang = Math.acos(Math.min(Math.max(dot / (mag1 * mag2), -1), 1)) * 180 / Math.PI;
-    
-    // Filtro fisiologico: un ginocchio o gomito umano sotto i 30 gradi in un tiro è un errore di tracking
-    if (ang < 30) return null; 
-    return Math.round(ang);
+    return (ang < 20) ? null : Math.round(ang); // Filtro anatomico
 }
 
 function getVerticalAngle(top, bottom) {
-    if(!top || !bottom || top.visibility < 0.65) return null;
+    if(!top || !bottom || top.visibility < 0.5) return null;
     let ang = Math.abs(Math.atan2(top.x - bottom.x, top.y - bottom.y) * 180 / Math.PI);
-    // Filtro busto: se il busto è quasi orizzontale (es 30°) è un errore di tracking
-    if (ang < 60) return null;
-    return Math.round(ang);
+    return (ang < 40) ? null : Math.round(ang); // Filtro anatomico
 }
 
 function analyzePose(lm) {
     const nose=lm[0], shoulder=lm[12], elbow=lm[14], wrist=lm[16], hip=lm[24], knee=lm[26], ankle=lm[28], foot=lm[32], index=lm[20];
-    
-    const kA = getAngle(hip, knee, ankle);
-    const eA = getAngle(shoulder, elbow, wrist);
-    const bA = getVerticalAngle(shoulder, hip);
-    
-    if (kA === null || eA === null || bA === null) return;
+    const kA = getAngle(hip, knee, ankle), eA = getAngle(shoulder, elbow, wrist);
+    if (kA === null || eA === null) return;
 
-    // 1. STATO IDLE -> DIP
-    if (state === "IDLE" && kA < 135 && (video.currentTime - lastShotTime > 1.2)) {
+    // 1. DIP
+    if (state === "IDLE" && kA < 138 && (video.currentTime - lastShotTime > 1.2)) {
         state = "DIP";
         currentShot = { 
             t: new Date().toLocaleTimeString(), 
-            dip: { kA, aA: getAngle(knee, ankle, foot), bA, wA: getAngle(elbow, wrist, index) }, 
-            maxK: kA, startX: ankle.x 
+            dip: { kA, aA: getAngle(knee, ankle, foot), bA: getVerticalAngle(shoulder, hip), wA: getAngle(elbow, wrist, index) }, 
+            maxK: kA, startX: ankle.x, set: null 
         };
-        document.getElementById('cur-phase').innerText = "DIP";
     }
     
     if (state === "DIP") {
         if (kA < currentShot.maxK) {
             currentShot.maxK = kA;
-            // Aggiorna i dati del DIP solo se siamo nel punto più basso per stabilità
-            currentShot.dip = { kA, aA: getAngle(knee, ankle, foot), bA, wA: getAngle(elbow, wrist, index) };
+            // Popoliamo costantemente il DIP fino al punto più basso
+            currentShot.dip = { kA, aA: getAngle(knee, ankle, foot), bA: getVerticalAngle(shoulder, hip), wA: getAngle(elbow, wrist, index) };
         }
-        // Transizione a RISE solo se le ginocchia si estendono sensibilmente
         if (kA > currentShot.maxK + 8) state = "RISE";
     }
 
     if (state === "RISE") {
-        document.getElementById('cur-phase').innerText = "RISE";
-        // Cattura SET POINT solo durante la risalita (impedisce i 65° d'errore)
+        // SET POINT: Palla sale oltre il naso durante la risalita
         if (wrist.y <= nose.y && !currentShot.set) {
-            currentShot.set = { pos: wrist.y < nose.y ? "Sopra" : "Sotto", eH: elbow.y.toFixed(2), kneeAtSet: kA };
+            currentShot.set = { 
+                pos: wrist.y < nose.y ? "Sopra" : "Sotto", 
+                eH: elbow.y.toFixed(2), 
+                eA: eA,
+                kneeAtSet: kA 
+            };
+            document.getElementById('sync-val').innerText = kA + "°";
         }
-        // TRIGGER RILASCIO
         if (eA > 150) {
-            state = "RELEASE_TRACKING";
-            releaseBuffer = [];
-            frameCounter = 0;
+            state = "RELEASE_TRACK";
+            releaseBuffer = []; frameCounter = 0;
         }
     }
 
-    if (state === "RELEASE_TRACKING") {
+    if (state === "RELEASE_TRACK") {
         frameCounter++;
         releaseBuffer.push(eA);
         if (frameCounter > 15) {
-            state = "DONE";
-            // Stabilità: media dei 3 valori più alti nel buffer
             releaseBuffer.sort((a,b) => b-a);
-            const stableRelease = Math.round((releaseBuffer[0] + releaseBuffer[1] + releaseBuffer[2]) / 3);
-            
+            const stableRel = Math.round((releaseBuffer[0] + releaseBuffer[1] + releaseBuffer[2]) / 3);
             const fingerVal = getAngle(elbow, wrist, index) < 160 ? "SI" : "NO";
             
+            // MAPPARE ESATTAMENTE LE COLONNE DI GOOGLE (16 colonne)
             shotLog.push({
                 timestamp: currentShot.t,
-                dip: currentShot.dip,
-                rise: { kA_at_rise: currentShot.set ? currentShot.set.kneeAtSet : kA },
+                atleta: "Atleta 1",
+                tiroNum: shotLog.length + 1,
+                dip: currentShot.dip, // Contiene kA, aA, bA, wA
+                rise: { kA_at_set: currentShot.set ? currentShot.set.kneeAtSet : kA },
                 set: currentShot.set || { pos: "N/D", eH: 0, eA: 0 },
                 release: { 
-                    angolo_rilascio: stableRelease, 
-                    sway: (currentShot.startX - ankle.x).toFixed(3), 
-                    estensione_braccio: stableRelease > 171 ? "Completa" : "Corta", 
-                    dita_barattolo: fingerVal 
+                    lancio: stableRel, 
+                    sway: (currentShot.startX - ankle.x).toFixed(2), 
+                    ext: stableRel > 171 ? "Completa" : "Corta", 
+                    dita: fingerVal 
                 },
-                commento_coach: (currentShot.set && currentShot.set.kneeAtSet > 125) ? "Fluido" : "Due tempi"
+                commento: (currentShot.set && currentShot.set.kneeAtSet > 125) ? "Fluido" : "Due tempi"
             });
             
             document.getElementById('shot-count').innerText = shotLog.length;
             document.getElementById('btn-save').style.display = "block";
-            state = "IDLE"; 
-            lastShotTime = video.currentTime;
-            document.getElementById('cur-phase').innerText = "IDLE";
+            state = "IDLE"; lastShotTime = video.currentTime;
         }
     }
 }
 
 // --- ENGINE ---
 const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
-pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.7 });
+pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.6 });
 
 pose.onResults(r => {
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.drawImage(video, 0,0,canvas.width,canvas.height);
+    if (canestroPos) {
+        ctx.beginPath(); ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, 15, 0, 2*Math.PI);
+        ctx.strokeStyle = "yellow"; ctx.lineWidth = 4; ctx.stroke();
+    }
     if (r.poseLandmarks) {
         r.poseLandmarks.forEach(lm => { lm.x = lm.x * roi.width + roi.x; });
         drawConnectors(ctx, r.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
         analyzePose(r.poseLandmarks);
     }
-    if (canestroPos) {
-        ctx.beginPath(); ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, 15, 0, 2*Math.PI);
-        ctx.strokeStyle = "yellow"; ctx.lineWidth = 4; ctx.stroke();
-    }
 });
 
 document.getElementById('video_file').onchange = (e) => {
+    const file = e.target.files[0];
     const reader = new FileReader();
     reader.onload = (ev) => { video.src = ev.target.result; video.load(); };
-    reader.readAsDataURL(e.target.files[0]);
+    reader.readAsDataURL(file);
     video.onloadedmetadata = () => { video.currentTime = 0.1; };
 };
 
 video.onseeked = () => {
     canvas.width = video.videoWidth; canvas.height = video.videoHeight;
     ctx.drawImage(video, 0,0,canvas.width,canvas.height);
-    if (calibrationStep === 0) { calibrationStep = 1; feedback.innerText = "1. CLICCA SUL CANESTRO"; }
+    if (calibrationStep === 0) { calibrationStep = 1; feedback.innerText = "1. CANESTRO"; }
     if (isAnalyzing) runAnalysis();
 };
 
@@ -209,17 +195,15 @@ canvas.addEventListener('mousedown', (e) => {
     const x = ((e.clientX - rect.left) * (canvas.width / rect.width)) / canvas.width;
     const y = ((e.clientY - rect.top) * (canvas.height / rect.height)) / canvas.height;
     if (calibrationStep === 1) {
-        canestroPos = {x, y}; calibrationStep = 2; feedback.innerText = "2. ISOLA IL TIRATORE";
+        canestroPos = {x, y}; calibrationStep = 2; feedback.innerText = "2. TIRATORE";
     } else if (calibrationStep === 2) {
-        playerX = x; roi.width = 0.55; roi.x = Math.max(0, x - 0.275);
-        feedback.innerText = "PRONTO. AVVIA.";
-        document.getElementById('btn-start').style.display = "block";
-        ctx.fillStyle = "rgba(0, 230, 118, 0.2)"; ctx.fillRect(roi.x*canvas.width, 0, roi.width*canvas.width, canvas.height);
+        playerX = x; roi.width = 0.5; roi.x = Math.max(0, x - 0.25);
+        feedback.innerText = "AVVIA ANALISI"; document.getElementById('btn-start').style.display = "block";
     }
 });
 
 async function runAnalysis() {
-    if (video.ended) { feedback.innerText = "FINITO"; return; }
+    if (video.ended) { feedback.innerText = "FINE"; return; }
     cropCanvas.width = video.videoWidth * roi.width; cropCanvas.height = video.videoHeight;
     cropCtx.drawImage(video, roi.x * video.videoWidth, 0, roi.width * video.videoWidth, video.videoHeight, 0, 0, cropCanvas.width, cropCanvas.height);
     await pose.send({image: cropCanvas});
@@ -234,10 +218,24 @@ document.getElementById('btn-start').onclick = function() {
 
 document.getElementById('btn-save').onclick = async function() {
     this.innerText = "...";
+    // Mappa dati per lo script Google esistente
+    const payload = shotLog.map(s => ({
+        timestamp: s.timestamp,
+        dip: s.dip,
+        rise: { kA_at_rise: s.rise.kA_at_set },
+        set: s.set,
+        release: { 
+            angolo_rilascio: s.release.lancio, 
+            sway: s.release.sway, 
+            estensione_braccio: s.release.ext, 
+            dita_barattolo: s.release.dita 
+        },
+        commento_coach: s.commento
+    }));
     try {
-        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
-        alert("Inviato!"); this.innerText = "SALVATO";
-    } catch(e) { alert("Errore"); this.innerText = "SALVA"; }
+        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+        alert("Salvato!"); this.innerText = "SALVATO";
+    } catch(e) { alert("Errore"); this.innerText = "RIPROVA"; }
 };
 </script>
 </body>
