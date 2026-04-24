@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Basket Lab Pro - Ultra Precision</title>
+    <title>AI Basket Lab Pro - Clinical Precision</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <style>
@@ -32,13 +32,13 @@
     <div id="feedback">1. CARICA VIDEO</div>
 
     <div id="top-left" class="ui-panel">
-        <h3 style="margin:0 0 10px 0; color:#ff5722; font-size: 1rem;">COACH IA FEEDBACK</h3>
+        <h3 style="margin:0 0 10px 0; color:#ff5722; font-size: 1rem;">CLINICAL ANALYTICS</h3>
         <div id="live-status">
             <div class="stat-row">Tiri Rilevati: <span id="shot-count" class="val">0</span></div>
             <div class="stat-row">Stato: <span id="cur-phase" class="val">IDLE</span></div>
         </div>
         <hr style="border:0; border-top:1px solid #444; margin:10px 0;">
-        <div id="coach-advice" style="font-size:0.75rem; color:#00e676;">Seleziona video e calibra.</div>
+        <div id="coach-advice" style="font-size:0.75rem; color:#00e676;">Dati stabilizzati. Analisi biomeccanica attiva.</div>
     </div>
 
     <div id="controls" class="ui-panel">
@@ -64,51 +64,32 @@ let canestroPos = null, playerX = null, calibrationStep = 0, isAnalyzing = false
 let shotLog = [], state = "IDLE", currentShot = null, lastShotTime = 0;
 let roi = { x: 0, width: 1 };
 let frameCounter = 0;
-
-function drawScene(image, landmarks = null) {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (image) ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-    else ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    if (canestroPos) {
-        ctx.beginPath();
-        ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, 20, 0, 2 * Math.PI);
-        ctx.strokeStyle = "yellow"; ctx.lineWidth = 5; ctx.stroke();
-    }
-    if (!isAnalyzing && playerX && calibrationStep === 2) {
-        ctx.fillStyle = "rgba(0, 230, 118, 0.3)";
-        ctx.fillRect(roi.x * canvas.width, 0, roi.width * canvas.width, canvas.height);
-    }
-    if (landmarks) drawConnectors(ctx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
-}
+let wristYHistory = []; // Per smoothing polso
 
 function getAngle(a, b, c) {
-    if(!a || !b || !c || a.visibility < 0.5) return null;
-    let ang = Math.abs((Math.atan2(c.y-b.y, c.x-b.x) - Math.atan2(a.y-b.y, a.x-b.x)) * 180 / Math.PI);
-    return ang > 180 ? 360 - ang : Math.round(ang);
+    if(!a || !b || !c || a.visibility < 0.6) return null;
+    let v1 = { x: a.x - b.x, y: a.y - b.y };
+    let v2 = { x: c.x - b.x, y: c.y - b.y };
+    let dot = v1.x * v2.x + v1.y * v2.y;
+    let mag1 = Math.sqrt(v1.x**2 + v1.y**2);
+    let mag2 = Math.sqrt(v2.x**2 + v2.y**2);
+    let angle = Math.acos(Math.min(Math.max(dot / (mag1 * mag2), -1), 1));
+    return Math.round(angle * 180 / Math.PI);
 }
 
 function getVerticalAngle(top, bottom) {
-    if(!top || !bottom || top.visibility < 0.5) return null;
+    if(!top || !bottom || top.visibility < 0.6) return null;
     return Math.round(Math.abs(Math.atan2(top.x - bottom.x, top.y - bottom.y) * 180 / Math.PI));
-}
-
-function getMetricStatus(value, type) {
-    switch(type) {
-        case 'knee_dip': 
-            if (value >= 115 && value <= 145) return { label: "OTTIMO", color: "#00e676", advice: "Gambe OK." };
-            return { label: "RIVEDERE", color: "#ffea00", advice: "Controlla profondità." };
-        case 'fingers': 
-            return value === "SI" ? { label: "SI", color: "#00e676", advice: "Ottimo follow-through." } 
-                                  : { label: "NO", color: "#ff1744", advice: "Spezza il polso!" };
-        default: return { label: "OK", color: "#fff", advice: "" };
-    }
 }
 
 function analyzePose(lm) {
     const nose=lm[0], shoulder=lm[12], elbow=lm[14], wrist=lm[16], hip=lm[24], knee=lm[26], ankle=lm[28], foot=lm[32], index=lm[20];
+    
+    // Smoothing Y Polso (Media mobile 3 frame)
+    wristYHistory.push(wrist.y);
+    if(wristYHistory.length > 3) wristYHistory.shift();
+    const smoothWristY = wristYHistory.reduce((a, b) => a + b, 0) / wristYHistory.length;
+
     const kA = getAngle(hip, knee, ankle), eA = getAngle(shoulder, elbow, wrist);
     if (kA === null || eA === null) return;
 
@@ -118,7 +99,7 @@ function analyzePose(lm) {
         currentShot = { 
             t: new Date().toLocaleTimeString(), 
             dip: { kA, aA: getAngle(knee, ankle, foot), bA: getVerticalAngle(shoulder, hip), wA: getAngle(elbow, wrist, index) }, 
-            maxK: kA, startX: ankle.x, maxReleaseAngle: 0 
+            maxK: kA, startX: ankle.x, maxRel: 0 
         };
         document.getElementById('cur-phase').innerText = "DIP";
     }
@@ -129,50 +110,44 @@ function analyzePose(lm) {
     }
 
     if (state === "RISE") {
-        if (wrist.y <= nose.y && !currentShot.set) {
-            currentShot.set = { pos: wrist.y < nose.y ? "Sopra" : "Sotto", eH: elbow.y.toFixed(2), eA };
+        // VALIDAZIONE SET POINT: Polso deve essere sopra naso MA anche sopra spalla (filtro sicurezza)
+        if (smoothWristY <= nose.y && smoothWristY < shoulder.y && !currentShot.set) {
+            currentShot.set = { 
+                pos: smoothWristY < nose.y ? "Sopra" : "Sotto", 
+                eH: elbow.y.toFixed(2), 
+                kneeAtSet: kA // Questo è il valore del sincronismo
+            };
+            document.getElementById('cur-phase').innerText = "SET POINT";
         }
-        // TRIGGER RILASCIO (Inizia a monitorare il picco)
         if (eA > 150) {
             state = "MONITORING_RELEASE";
-            currentShot.maxReleaseAngle = eA;
+            currentShot.maxRel = eA;
             frameCounter = 0;
         }
     }
 
     if (state === "MONITORING_RELEASE") {
         frameCounter++;
-        // Aggiorna il massimo angolo trovato nei fotogrammi successivi
-        if (eA > currentShot.maxReleaseAngle) {
-            currentShot.maxReleaseAngle = eA;
-        }
-
-        // Dopo 12 fotogrammi (~0.2s), chiudi l'analisi del picco
+        if (eA > currentShot.maxRel) currentShot.maxRel = eA;
         if (frameCounter > 12) {
             state = "RELEASE_COMPLETE";
             const fingerVal = getAngle(elbow, wrist, index) < 160 ? "SI" : "NO";
-            const kneeStat = getMetricStatus(currentShot.dip.kA, 'knee_dip');
-            const fingerStat = getMetricStatus(fingerVal, 'fingers');
-
             shotLog.push({
                 timestamp: currentShot.t,
                 dip: currentShot.dip,
-                rise: { kA_at_rise: currentShot.maxK },
+                rise: { kA_at_rise: currentShot.set ? currentShot.set.kneeAtSet : kA },
                 set: currentShot.set || { pos: "N/D", eH: 0, eA: 0 },
                 release: { 
-                    angolo_rilascio: currentShot.maxReleaseAngle, 
+                    angolo_rilascio: currentShot.maxRel, 
                     sway: (currentShot.startX - ankle.x).toFixed(3), 
-                    estensione_braccio: currentShot.maxReleaseAngle > 172 ? "Completa" : "Corta", 
+                    estensione_braccio: currentShot.maxRel > 172 ? "Completa" : "Corta", 
                     dita_barattolo: fingerVal 
                 },
-                commento_coach: `${kneeStat.label} | ${fingerStat.advice}`
+                commento_coach: (currentShot.set && currentShot.set.kneeAtSet > 135) ? "Fluido" : "Due tempi"
             });
-            
             document.getElementById('shot-count').innerText = shotLog.length;
-            document.getElementById('coach-advice').innerText = fingerStat.advice;
             document.getElementById('btn-save').style.display = "block";
-            state = "IDLE"; 
-            lastShotTime = video.currentTime;
+            state = "IDLE"; lastShotTime = video.currentTime;
             document.getElementById('cur-phase').innerText = "IDLE";
         }
     }
@@ -182,27 +157,29 @@ const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@medi
 pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.6 });
 
 pose.onResults(r => {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(video, 0,0,canvas.width,canvas.height);
     if (r.poseLandmarks) {
         r.poseLandmarks.forEach(lm => { lm.x = lm.x * roi.width + roi.x; });
+        drawConnectors(ctx, r.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
         analyzePose(r.poseLandmarks);
     }
-    drawScene(r.image, r.poseLandmarks);
+    if (canestroPos) {
+        ctx.beginPath(); ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, 15, 0, 2*Math.PI);
+        ctx.strokeStyle = "yellow"; ctx.lineWidth = 4; ctx.stroke();
+    }
 });
 
 document.getElementById('video_file').onchange = (e) => {
-    const file = e.target.files[0];
     const reader = new FileReader();
-    reader.onload = (event) => {
-        video.src = event.target.result;
-        video.load();
-    };
-    reader.readAsDataURL(file);
+    reader.onload = (ev) => { video.src = ev.target.result; video.load(); };
+    reader.readAsDataURL(e.target.files[0]);
+    video.onloadedmetadata = () => { video.currentTime = 0.1; };
 };
 
-video.onloadedmetadata = () => { video.currentTime = 0.1; };
-
 video.onseeked = () => {
-    drawScene();
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0,0,canvas.width,canvas.height);
     if (calibrationStep === 0) { calibrationStep = 1; feedback.innerText = "1. CLICCA SUL CANESTRO"; }
     if (isAnalyzing) runAnalysis();
 };
@@ -213,43 +190,36 @@ canvas.addEventListener('mousedown', (e) => {
     const x = ((e.clientX - rect.left) * (canvas.width / rect.width)) / canvas.width;
     const y = ((e.clientY - rect.top) * (canvas.height / rect.height)) / canvas.height;
     if (calibrationStep === 1) {
-        canestroPos = {x, y}; calibrationStep = 2;
-        feedback.innerText = "2. CLICCA SUL TIRATORE";
-        drawScene();
+        canestroPos = {x, y}; calibrationStep = 2; feedback.innerText = "2. ISOLA IL TIRATORE";
+        ctx.drawImage(video, 0,0,canvas.width,canvas.height);
+        ctx.beginPath(); ctx.arc(x*canvas.width, y*canvas.height, 15, 0, 2*Math.PI); ctx.strokeStyle="yellow"; ctx.stroke();
     } else if (calibrationStep === 2) {
-        playerX = x; roi.width = 0.50; roi.x = Math.max(0, x - roi.width/2);
+        playerX = x; roi.width = 0.5; roi.x = Math.max(0, x - 0.25);
         feedback.innerText = "PRONTO. AVVIA ANALISI.";
         document.getElementById('btn-start').style.display = "block";
-        drawScene();
+        ctx.fillStyle = "rgba(0, 230, 118, 0.2)"; ctx.fillRect(roi.x*canvas.width, 0, roi.width*canvas.width, canvas.height);
     }
 });
 
 async function runAnalysis() {
-    if (video.ended) {
-        feedback.innerText = "ANALISI COMPLETATA";
-        return;
-    }
-    cropCanvas.width = video.videoWidth * roi.width;
-    cropCanvas.height = video.videoHeight;
+    if (video.ended) { feedback.innerText = "ANALISI COMPLETATA"; return; }
+    cropCanvas.width = video.videoWidth * roi.width; cropCanvas.height = video.videoHeight;
     cropCtx.drawImage(video, roi.x * video.videoWidth, 0, roi.width * video.videoWidth, video.videoHeight, 0, 0, cropCanvas.width, cropCanvas.height);
     await pose.send({image: cropCanvas});
     video.currentTime += (1/60);
 }
 
 document.getElementById('btn-start').onclick = function() {
-    isAnalyzing = true;
-    this.style.display = "none";
+    isAnalyzing = true; this.style.display = "none";
     document.getElementById('lbl-upload').style.display = "none";
-    video.currentTime = 0;
-    feedback.innerText = "ANALISI IN CORSO...";
+    video.currentTime = 0; feedback.innerText = "ANALISI IN CORSO...";
 };
 
 document.getElementById('btn-save').onclick = async function() {
     this.innerText = "INVIO...";
     try {
         await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
-        alert("Dati salvati!");
-        this.innerText = "SALVATO";
+        alert("Dati inviati!"); this.innerText = "SALVATO";
     } catch(e) { alert("Errore"); this.innerText = "RIPROVA"; }
 };
 </script>
