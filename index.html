@@ -2,235 +2,257 @@
 <html lang="it">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI Basket Lab - Analisi Video</title>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Basket Lab Pro - Analisi Video Ex-Post</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <style>
-        body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; }
+        body { margin: 0; background: #1a1a1a; color: white; font-family: 'Segoe UI', Arial, sans-serif; overflow: hidden; }
         #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
-        /* Video ora visibile ma gestito dal canvas */
         video { position: absolute; width: 1px; height: 1px; opacity: 0; }
-        canvas { width: 100vw; height: 100vh; object-fit: contain; cursor: crosshair; }
-        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
-        .panel { position: absolute; background: rgba(0,0,0,0.7); padding: 8px; border-radius: 8px; pointer-events: auto; font-size: 11px; }
-        #top-left { top: 10px; left: 10px; }
-        #feedback { position: absolute; top: 35%; width: 100%; text-align: center; font-size: 1.8rem; font-weight: bold; color: #ff5722; text-shadow: 2px 2px 5px #000; }
-        .controls { position: absolute; bottom: 20px; width: 100%; display: flex; flex-direction: column; align-items: center; gap: 10px; pointer-events: auto; }
-        .btn-group { display: flex; gap: 10px; }
-        button, label { padding: 12px 18px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 13px; color: white; text-align: center; }
-        #btn-start { background: #ff5722; }
-        #btn-upload { background: #2196F3; }
-        #btn-save-exit { background: #4CAF50; display: none; }
-        #btn-discard-exit { background: #444; }
-        input[type=range] { vertical-align: middle; width: 60px; }
-        input[type=file] { display: none; }
+        canvas { width: 100vw; height: 100vh; object-fit: contain; background: #000; }
+        
+        .ui-panel { position: absolute; background: rgba(0,0,0,0.85); padding: 15px; border-radius: 12px; border: 1px solid #444; pointer-events: auto; }
+        #top-left { top: 15px; left: 15px; width: 280px; }
+        #controls { bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 15px; align-items: center; }
+        
+        #feedback { position: absolute; top: 20%; width: 100%; text-align: center; font-size: 1.8rem; font-weight: bold; color: #ff5722; text-shadow: 2px 2px 4px #000; pointer-events: none; z-index: 10; }
+        
+        button, .btn-label { background: #ff5722; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.3s; text-align: center; display: inline-block; }
+        button:hover { background: #ff784e; }
+        button:disabled { background: #444; cursor: not-allowed; }
+        
+        input[type="file"] { display: none; }
+        .stat-row { display: flex; justify-content: space-between; margin: 5px 0; font-size: 0.85rem; border-bottom: 1px solid #333; padding-bottom: 2px; }
+        .val { color: #00e676; font-weight: bold; }
     </style>
 </head>
 <body>
+
 <div id="container">
     <video id="input_video" playsinline></video>
     <canvas id="output_canvas"></canvas>
-    <div id="ui">
-        <div id="top-left" class="panel">
-            GIOCATORE: <input type="text" id="player_name" value="Atleta 1" style="width:70px; background:#222; color:white; border:none;"><br>
-            TIRI: <span id="counter" style="color:#00e676; font-weight:bold;">0</span> | 
-            STATO: <span id="st">IDLE</span><br>
-            RAGGIO CANESTRO: <input type="range" id="basket_radius" min="10" max="100" value="30">
-        </div>
-        <div id="feedback">CARICA UN VIDEO E CALIBRA IL FERRO</div>
-        <div class="controls">
-            <div class="btn-group">
-                <label id="btn-upload" for="video_file">CARICA VIDEO</label>
-                <input type="file" id="video_file" accept="video/*">
-                <button id="btn-start" style="display:none;">AVVIA ANALISI</button>
-            </div>
-            <div class="btn-group">
-                <button id="btn-save-exit">SALVA DATI</button>
-                <button id="btn-discard-exit">ESCI</button>
+    
+    <div id="feedback">CARICA UN VIDEO PER INIZIARE</div>
+
+    <!-- Pannello Statistiche Live -->
+    <div id="top-left" class="ui-panel">
+        <h3 style="margin:0 0 10px 0; color:#ff5722; font-size: 1.1rem;">DATA ANALYTICS</h3>
+        <div id="metrics-content">
+            <div class="stat-row">Atleta: <input type="text" id="player_name" value="Atleta 1" style="background:none; color:white; border:none; text-align:right; width:80px;"></div>
+            <div class="stat-row">Tiri Rilevati: <span class="val" id="shot-count">0</span></div>
+            <hr>
+            <div id="last-shot-data">
+                <div class="stat-row">Fase: <span class="val" id="current-phase">IDLE</span></div>
+                <div class="stat-row">Knee Dip: <span class="val" id="m-knee">-</span></div>
+                <div class="stat-row">Release Angle: <span class="val" id="m-release">-</span></div>
+                <div class="stat-row">Sway: <span class="val" id="m-sway">-</span></div>
             </div>
         </div>
+    </div>
+
+    <!-- Controlli Inferiori -->
+    <div id="controls" class="ui-panel">
+        <label class="btn-label" for="video_file">CARICA VIDEO ANALISI</label>
+        <input type="file" id="video_file" accept="video/*">
+        
+        <button id="btn-start" style="display:none;">AVVIA ANALISI SEQUENZA</button>
+        <button id="btn-save" style="display:none; background:#4CAF50;">SALVA SU GOOGLE SHEETS</button>
     </div>
 </div>
 
 <script>
-// --- CONFIGURAZIONE E VARIABILI ---
-const GOOGLE_SCRIPT_URL = "URL_TUO_SCRIPT";
-let audioCtx = null;
-let shotLog = [], state = "IDLE", shotData = {}, lastStateChange = Date.now();
-let canestroPos = null; 
-let pallaInAria = false;
-let esitoCanestro = "SBAGLIATO";
-let timeoutPalla = 0;
-let isProcessing = false;
+// !!! CONFIGURAZIONE: INCOLLA QUI LA TUA URL DI GOOGLE SCRIPT !!!
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxcQq1oHvo8XvyO-WBYgdjuX5XFvOaDHXUKwtjvvnu2gOCfR4IrktzLHacZis4QZjV21g/exec";
 
 const video = document.getElementById('input_video');
 const canvas = document.getElementById('output_canvas');
 const ctx = canvas.getContext('2d');
 const feedback = document.getElementById('feedback');
-const radiusInput = document.getElementById('basket_radius');
-const fileInput = document.getElementById('video_file');
-const btnStart = document.getElementById('btn-start');
+const shotCountEl = document.getElementById('shot-count');
 
-// --- GESTIONE VIDEO ---
-fileInput.onchange = function(e) {
-    const file = e.target.files[0];
-    if (file) {
-        const url = URL.createObjectURL(file);
-        video.src = url;
-        video.load();
-        btnStart.style.display = "block";
-        feedback.innerText = "VIDEO CARICATO. CLICCA SUL FERRO PER CALIBRARE.";
-        
-        // Mostra il primo frame per calibrazione
-        video.onloadeddata = () => {
-            video.currentTime = 0.1; 
-            setTimeout(drawFrameOriginal, 500);
-        };
-    }
-};
+let shotLog = [];
+let state = "IDLE";
+let currentShot = null;
+let lastShotTime = 0;
+const COOLDOWN = 1500; // Tempo minimo tra un tiro e l'altro
 
-function drawFrameOriginal() {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-}
-
-canvas.addEventListener('mousedown', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    canestroPos = {
-        x: ((e.clientX - rect.left) * scaleX) / canvas.width,
-        y: ((e.clientY - rect.top) * scaleY) / canvas.height
-    };
-    feedback.innerText = "CALIBRATO! PREMI AVVIA ANALISI";
-    drawFrameOriginal();
-    // Disegna cerchio calibrazione
-    ctx.beginPath();
-    ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, radiusInput.value, 0, 2 * Math.PI);
-    ctx.strokeStyle = "yellow"; ctx.lineWidth = 5; ctx.stroke();
-});
-
-// --- LOGICA ANALISI (Invariata ma ottimizzata) ---
+// --- FUNZIONI MATEMATICHE ---
 function getAngle(a, b, c) {
     let rad = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
     let ang = Math.abs(rad * 180 / Math.PI);
     return ang > 180 ? 360 - ang : ang;
 }
 
+function getVerticalAngle(top, bottom) {
+    return Math.abs(Math.atan2(top.x - bottom.x, top.y - bottom.y) * 180 / Math.PI);
+}
+
+// --- ANALISI BIOMECCANICA ---
 function analyzePose(lm) {
-    const nose=lm[0], shoulder=lm[12], elbow=lm[14], wrist=lm[16], hip=lm[24], knee=lm[26], ankle=lm[28], foot=lm[32], ear=lm[8], index=lm[20];
-    const kA = getAngle(hip, knee, ankle);
-    const eA = getAngle(shoulder, elbow, wrist);
+    const now = Date.now();
+    // Landmark principali (lato destro come riferimento)
+    const nose = lm[0], shoulder = lm[12], elbow = lm[14], wrist = lm[16], hip = lm[24], knee = lm[26], ankle = lm[28], index = lm[20], foot = lm[32];
 
-    // Reset se stato bloccato (usa tempo reale poiché l'analisi scorre)
-    if (state !== "IDLE" && (Date.now() - lastStateChange > 4000)) state = "IDLE";
+    const kA = getAngle(hip, knee, ankle); // Ginocchia
+    const eA = getAngle(shoulder, elbow, wrist); // Gomito
+    const wA = getAngle(elbow, wrist, index); // Polso
+    const bA = getVerticalAngle(shoulder, hip); // Busto
+    const aA = getAngle(knee, ankle, foot); // Caviglia
 
-    if (state === "IDLE" && kA < 145) {
-        state = "DIP"; lastStateChange = Date.now();
-        shotData = { errors: [], minK: kA, sX: ankle.x, lowestW: wrist.y };
-        pallaInAria = false; esitoCanestro = "SBAGLIATO";
+    // 1. RILEVAMENTO DIP (Caricamento)
+    if (state === "IDLE" && kA < 140 && (now - lastShotTime > COOLDOWN)) {
+        state = "DIP";
+        currentShot = {
+            timestamp: new Date().toLocaleTimeString(),
+            dip: { kA, aA, bA, wA, ballHipDist: Math.abs(wrist.x - hip.x) },
+            maxDipKnee: kA
+        };
+        document.getElementById('current-phase').innerText = "DIP";
     }
 
+    // 2. RILEVAMENTO RISE (Risalita e Set Point)
     if (state === "DIP") {
-        if (wrist.y > shotData.lowestW) shotData.lowestW = wrist.y;
-        if (kA > shotData.minK + 5 || wrist.y < shotData.lowestW - 0.02) {
-            state = "RISE"; lastStateChange = Date.now();
+        if (kA < currentShot.maxDipKnee) currentShot.maxDipKnee = kA; // monitora il punto più basso
+        
+        if (kA > currentShot.maxDipKnee + 7) { // Inizia a risalire
+            state = "RISE";
+            currentShot.rise = { startKnee: kA, startWristY: wrist.y };
+            document.getElementById('current-phase').innerText = "RISE";
         }
     }
 
     if (state === "RISE") {
-        if (eA > 155) {
-            state = "RELEASE"; lastStateChange = Date.now();
-            pallaInAria = true; timeoutPalla = 0;
-            // Esegui controlli biomeccanici
-            if (elbow.y > nose.y) shotData.errors.push("Gomito basso");
-            setTimeout(() => finalizeShot(eA, shotData.minK), 1000);
+        // Monitoraggio Set Point (quando la palla passa davanti al viso)
+        if (wrist.y <= nose.y && !currentShot.setPoint) {
+            currentShot.setPoint = {
+                ballPos: wrist.y < nose.y ? "Sopra Naso" : "Sotto Naso",
+                eA, eH: elbow.y, wA, bA,
+                eyeAlignment: Math.abs(nose.x - index.x) < 0.05 ? "Allineato" : "Fuori"
+            };
+        }
+
+        // 3. RELEASE (Rilascio)
+        if (eA > 155 && wrist.y < shoulder.y) {
+            state = "RELEASE";
+            document.getElementById('current-phase').innerText = "RELEASE";
+            captureFinalData(lm, eA, bA, ankle.x);
         }
     }
 }
 
-function trackBall(results) {
-    if (!pallaInAria || !canestroPos) return;
-    timeoutPalla++;
-    if (timeoutPalla > 50) pallaInAria = false;
-    const wrist = results.poseLandmarks[16];
-    const dist = Math.sqrt(Math.pow(wrist.x - canestroPos.x, 2) + Math.pow(wrist.y - canestroPos.y, 2));
-    const normRadius = radiusInput.value / canvas.width;
-    if (dist < normRadius * 2) esitoCanestro = "SEGNATO";
+function captureFinalData(lm, relAngle, torsoAngle, startAnkleX) {
+    const elbow = lm[14], wrist = lm[16], shoulder = lm[12], hip = lm[24], ankle = lm[28], index = lm[20];
+    
+    // Aspettiamo un attimo per il follow-through (dita nel barattolo)
+    setTimeout(() => {
+        const finalW = getAngle(elbow, wrist, index);
+        const shotData = {
+            timestamp: currentShot.timestamp,
+            dip: currentShot.dip,
+            rise: currentShot.rise,
+            set: currentShot.setPoint || {},
+            release: {
+                angle: relAngle,
+                elbowHeight: elbow.y,
+                sway: (startAnkleX - ankle.x).toFixed(4),
+                extension: relAngle > 168 ? "Piena" : "Corta",
+                fingers: finalW < 155 ? "SI" : "NO",
+                shoulderHipAlign: Math.abs(shoulder.x - hip.x).toFixed(4)
+            }
+        };
+
+        shotLog.push(shotData);
+        
+        // Aggiorna UI
+        shotCountEl.innerText = shotLog.length;
+        document.getElementById('m-knee').innerText = Math.round(shotData.dip.kA) + "°";
+        document.getElementById('m-release').innerText = Math.round(shotData.release.angle) + "°";
+        document.getElementById('m-sway').innerText = shotData.release.sway;
+        document.getElementById('btn-save').style.display = "block";
+        feedback.innerText = "TIRO " + shotLog.length + " ANALIZZATO";
+
+        // Reset per il prossimo tiro nel video
+        state = "IDLE";
+        lastShotTime = Date.now();
+    }, 600);
 }
 
-function finalizeShot(e, k) {
-    let res = shotData.errors.length > 0 ? shotData.errors[0] : "PERFETTO";
-    shotLog.push({
-        player: document.getElementById('player_name').value,
-        esito: res,
-        canestro: esitoCanestro,
-        dettagli: shotData.errors.join(", ")
-    });
-    document.getElementById('counter').innerText = shotLog.length;
-    feedback.innerHTML = `TIRO: ${res} | ${esitoCanestro}`;
-    state = "IDLE";
-}
-
-// --- CORE ENGINE ---
+// --- CORE ENGINE MEDIAPIPE ---
 const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
-pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5 });
+pose.onResults(onResults);
 
-pose.onResults(r => {
-    if (!r.image) return;
+function onResults(r) {
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
     ctx.save();
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.drawImage(r.image, 0,0,canvas.width,canvas.height);
     if (r.poseLandmarks) {
         drawConnectors(ctx, r.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+        drawLandmarks(ctx, r.poseLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
         analyzePose(r.poseLandmarks);
-        trackBall(r);
-    }
-    if (canestroPos) {
-        ctx.beginPath();
-        ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, radiusInput.value, 0, 2 * Math.PI);
-        ctx.strokeStyle = "yellow"; ctx.lineWidth = 3; ctx.stroke();
     }
     ctx.restore();
-});
-
-// Funzione ricorsiva per processare i frame del video caricato
-async function processVideo() {
-    if (video.paused || video.ended) {
-        isProcessing = false;
-        feedback.innerText = "ANALISI COMPLETATA";
-        document.getElementById('btn-save-exit').style.display = "block";
-        return;
-    }
-    await pose.send({image: video});
-    requestAnimationFrame(processVideo);
 }
 
-btnStart.onclick = function() {
-    if (!canestroPos) { alert("Calibra il canestro prima!"); return; }
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    
+// --- GESTIONE VIDEO E BOTTONI ---
+document.getElementById('video_file').onchange = function(e) {
+    const file = e.target.files[0];
+    if (file) {
+        video.src = URL.createObjectURL(file);
+        video.load();
+        video.onloadeddata = () => {
+            feedback.innerText = "VIDEO PRONTO. CLICCA AVVIA.";
+            document.getElementById('btn-start').style.display = "block";
+            // Mostra il primo frame
+            canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0,0,canvas.width,canvas.height);
+        };
+    }
+};
+
+document.getElementById('btn-start').onclick = function() {
     this.style.display = "none";
-    document.getElementById('btn-upload').style.display = "none";
     feedback.innerText = "ANALISI IN CORSO...";
-    
     video.play();
-    isProcessing = true;
-    processVideo();
+    runAnalysis();
 };
 
-document.getElementById('btn-save-exit').onclick = async function() {
-    this.innerText = "INVIO...";
+async function runAnalysis() {
+    if (!video.ended && !video.paused) {
+        await pose.send({image: video});
+        requestAnimationFrame(runAnalysis);
+    } else {
+        feedback.innerText = "ANALISI COMPLETATA. SALVA I DATI.";
+    }
+}
+
+// --- PUNTO 3: INVIO DATI A GOOGLE ---
+document.getElementById('btn-save').onclick = async function() {
+    const btn = this;
+    if (shotLog.length === 0) return;
+
+    btn.innerText = "INVIO...";
+    btn.disabled = true;
+
     try {
-        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
-        alert("Dati salvati con successo!");
-        location.reload();
-    } catch (e) { alert("Errore invio"); this.innerText = "SALVA"; }
-};
+        await fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(shotLog)
+        });
 
-document.getElementById('btn-discard-exit').onclick = () => location.reload();
+        alert("Analisi di " + shotLog.length + " tiri salvata con successo!");
+        btn.innerText = "SALVATO ✔";
+        btn.style.background = "#222";
+    } catch (e) {
+        alert("Errore durante il salvataggio.");
+        btn.disabled = false;
+        btn.innerText = "RIPROVA";
+    }
+};
 </script>
 </body>
 </html>
