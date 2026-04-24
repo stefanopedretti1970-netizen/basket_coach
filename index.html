@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Basket Lab - Sniper Mode</title>
+    <title>AI Basket Lab - Professional Biomechanics</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <style>
@@ -12,14 +12,13 @@
         video { position: absolute; width: 1px; height: 1px; opacity: 0; }
         canvas { width: 100vw; height: 100vh; object-fit: contain; cursor: crosshair; background: #111; }
         .ui-panel { position: absolute; background: rgba(0,0,0,0.85); padding: 15px; border-radius: 12px; border: 1px solid #444; pointer-events: auto; z-index: 100; }
-        #top-left { top: 15px; left: 15px; width: 250px; }
+        #top-left { top: 15px; left: 15px; width: 260px; }
         #controls { bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; }
         #feedback { position: absolute; top: 20%; width: 100%; text-align: center; font-size: 1.5rem; font-weight: bold; color: #ff5722; text-shadow: 2px 2px 4px #000; pointer-events: none; z-index: 10; }
-        button, .btn-label { background: #ff5722; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        button, .btn-label { background: #ff5722; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 13px; }
         input[type="file"] { display: none; }
         .stat { color: #00e676; font-weight: bold; }
-        /* Canvas di debug invisibile */
-        #crop_canvas { display: none; }
+        #crop_canvas { display: none; } /* Canvas nascosto per l'IA */
     </style>
 </head>
 <body>
@@ -27,26 +26,29 @@
 <div id="container">
     <video id="input_video" playsinline muted></video>
     <canvas id="output_canvas"></canvas>
-    <canvas id="crop_canvas"></canvas> <!-- Canvas per il ritaglio -->
+    <canvas id="crop_canvas"></canvas>
     
     <div id="feedback">CARICA VIDEO</div>
 
     <div id="top-left" class="ui-panel">
-        <h3 style="margin:0; color:#ff5722;">SNIPER TRACKING</h3>
-        Tiri: <span id="shot-count" class="stat">0</span><br>
-        Target: <span id="target-status" class="stat">Seleziona giocatore...</span>
+        <h3 style="margin:0; color:#ff5722; font-size: 1rem;">PRO ANALYTICS</h3>
+        Tiri rilevati: <span id="shot-count" class="stat">0</span><br>
+        Fase: <span id="cur-phase" class="stat">ATTESA</span>
+        <hr style="border:0; border-top:1px solid #444;">
+        <div style="font-size: 0.7rem; color: #aaa;">Target: Isola il tiratore per ignorare l'arbitro.</div>
     </div>
 
     <div id="controls" class="ui-panel">
         <label class="btn-label" for="video_file">CARICA VIDEO</label>
         <input type="file" id="video_file" accept="video/*">
-        <button id="btn-start" style="display:none;">AVVIA ANALISI SELEZIONE</button>
-        <button id="btn-save" style="display:none; background:#4CAF50;">SALVA REPORT</button>
+        <button id="btn-start" style="display:none;">AVVIA ANALISI</button>
+        <button id="btn-save" style="display:none; background:#4CAF50;">SALVA SU DRIVE</button>
         <button onclick="location.reload()" style="background:#444;">RESET</button>
     </div>
 </div>
 
 <script>
+// !!! INCOLLA QUI IL TUO URL DI GOOGLE !!!
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxcQq1oHvo8XvyO-WBYgdjuX5XFvOaDHXUKwtjvvnu2gOCfR4IrktzLHacZis4QZjV21g/exec";
 
 const video = document.getElementById('input_video');
@@ -56,72 +58,99 @@ const cropCanvas = document.getElementById('crop_canvas');
 const cropCtx = cropCanvas.getContext('2d');
 const feedback = document.getElementById('feedback');
 
-let canestroPos = null;
-let playerX = null; 
-let calibrationStep = 0; 
-let shotLog = [];
-let state = "IDLE";
-let currentShot = null;
+let canestroPos = null, playerX = null, calibrationStep = 0;
+let shotLog = [], state = "IDLE", currentShot = null, lastShotTime = 0;
+let roi = { x: 0, width: 1 };
 
-// Parametri per il ritaglio (ROI)
-let roi = { x: 0, width: 1 }; 
+// Helper Angoli
+function getAngle(a, b, c) {
+    let ang = Math.abs((Math.atan2(c.y-b.y, c.x-b.x) - Math.atan2(a.y-b.y, a.x-b.x)) * 180 / Math.PI);
+    return ang > 180 ? 360 - ang : Math.round(ang);
+}
 
-function draw() {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+// Helper Angolo Verticale (Busto)
+function getVerticalAngle(top, bottom) {
+    return Math.round(Math.abs(Math.atan2(top.x - bottom.x, top.y - bottom.y) * 180 / Math.PI));
+}
+
+// --- LOGICA ANALISI BIOMECCANICA ---
+function analyzePose(lm) {
+    const now = Date.now();
+    const nose=lm[0], shoulder=lm[12], elbow=lm[14], wrist=lm[16], hip=lm[24], knee=lm[26], ankle=lm[28], foot=lm[32], index=lm[20];
     
-    if (canestroPos) {
-        ctx.beginPath(); ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, 15, 0, 2*Math.PI);
-        ctx.strokeStyle = "yellow"; ctx.lineWidth = 3; ctx.stroke();
+    const kA = getAngle(hip, knee, ankle);
+    const eA = getAngle(shoulder, elbow, wrist);
+    const wA = getAngle(elbow, wrist, index);
+    const bA = getVerticalAngle(shoulder, hip);
+    const aA = getAngle(knee, ankle, foot);
+
+    // 1. DIP (Caricamento)
+    if (state === "IDLE" && kA < 140 && (now - lastShotTime > 1500)) {
+        state = "DIP";
+        currentShot = {
+            timestamp: new Date().toLocaleTimeString(),
+            dip: { kA, aA, bA, wA },
+            maxK: kA,
+            ankleX: ankle.x
+        };
+        document.getElementById('cur-phase').innerText = "DIP";
     }
-    if (playerX) {
-        // Disegna la zona di ritaglio che l'IA vedrà
-        ctx.fillStyle = "rgba(0, 230, 118, 0.2)";
-        ctx.fillRect((playerX - 0.15) * canvas.width, 0, 0.3 * canvas.width, canvas.height);
-        ctx.strokeStyle = "#00e676"; ctx.strokeRect((playerX - 0.15) * canvas.width, 0, 0.3 * canvas.width, canvas.height);
+
+    // 2. RISE (Risalita e Set Point)
+    if (state === "DIP") {
+        if (kA < currentShot.maxK) currentShot.maxK = kA;
+        if (kA > currentShot.maxK + 7) {
+            state = "RISE";
+            currentShot.rise = { kA_at_rise: kA };
+            document.getElementById('cur-phase').innerText = "RISE";
+        }
+    }
+
+    if (state === "RISE") {
+        // Cattura Set Point quando la palla è altezza occhi
+        if (wrist.y <= nose.y && !currentShot.set) {
+            currentShot.set = {
+                ball_vs_nose: wrist.y < nose.y ? "Sopra" : "Sotto",
+                eH_set: elbow.y.toFixed(2),
+                eA_set: eA
+            };
+        }
+        // 3. RELEASE (Rilascio)
+        if (eA > 155) {
+            state = "RELEASE";
+            document.getElementById('cur-phase').innerText = "RELEASE";
+            finalizeShot(lm, eA, ankle.x);
+        }
     }
 }
 
-document.getElementById('video_file').onchange = function(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => { video.src = ev.target.result; video.load(); };
-    reader.readAsDataURL(file);
-    video.onloadeddata = () => {
-        video.currentTime = 0.1;
-        setTimeout(() => {
-            draw();
-            calibrationStep = 1;
-            feedback.innerText = "1. CLICCA SUL CANESTRO";
-        }, 500);
-    };
-};
+function finalizeShot(lm, relAngle, finalAnkleX) {
+    const elbow=lm[14], wrist=lm[16], index=lm[20];
+    
+    // Piccolo ritardo per catturare il follow-through (dita nel barattolo)
+    setTimeout(() => {
+        const fullData = {
+            timestamp: currentShot.timestamp,
+            dip: currentShot.dip,
+            rise: { kA_at_rise: currentShot.maxK },
+            set: currentShot.set || { ball_vs_nose: "N/D", eH_set: 0, eA_set: 0 },
+            release: {
+                angolo_rilascio: relAngle,
+                sway: (currentShot.ankleX - finalAnkleX).toFixed(4),
+                estensione_braccio: relAngle > 165 ? "Completa" : "Corta",
+                dita_barattolo: getAngle(elbow, wrist, index) < 160 ? "SI" : "NO"
+            }
+        };
+        shotLog.push(fullData);
+        document.getElementById('shot-count').innerText = shotLog.length;
+        document.getElementById('btn-save').style.display = "block";
+        state = "IDLE";
+        lastShotTime = Date.now();
+        feedback.innerText = "TIRO ANALIZZATO!";
+    }, 600);
+}
 
-canvas.addEventListener('mousedown', (e) => {
-    if (calibrationStep === 0) return;
-    const rect = canvas.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) * (canvas.width / rect.width)) / canvas.width;
-    const y = ((e.clientY - rect.top) * (canvas.height / rect.height)) / canvas.height;
-
-    if (calibrationStep === 1) {
-        canestroPos = { x, y };
-        calibrationStep = 2;
-        feedback.innerText = "2. CLICCA SUL GIOCATORE (TIRATORE)";
-        draw();
-    } else if (calibrationStep === 2) {
-        playerX = x;
-        // Definiamo l'area di ritaglio: 30% della larghezza totale centrata sul click
-        roi.x = Math.max(0, playerX - 0.15);
-        roi.width = 0.3; 
-        document.getElementById('target-status').innerText = "TARGET ISOLATO";
-        feedback.innerText = "GIOCATORE ISOLATO. AVVIA ANALISI.";
-        document.getElementById('btn-start').style.display = "block";
-        draw();
-    }
-});
-
+// --- CORE ENGINE (SNIPER MODE) ---
 const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
 pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5 });
 
@@ -130,70 +159,86 @@ pose.onResults(r => {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     
     if (r.poseLandmarks) {
-        // IMPORTANTE: Riconvertiamo le coordinate dal ritaglio al video intero
-        r.poseLandmarks.forEach(lm => {
-            lm.x = lm.x * roi.width + roi.x; // Trasla la X
-            // lm.y rimane uguale perché non ritagliamo l'altezza
-        });
-
-        drawConnectors(ctx, r.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
-        
-        // Analizziamo solo se siamo sicuri sia il target
-        const hip = r.poseLandmarks[24];
-        const kA = getAngle(hip, r.poseLandmarks[26], r.poseLandmarks[28]);
-        const eA = getAngle(r.poseLandmarks[12], r.poseLandmarks[14], r.poseLandmarks[16]);
-
-        if (state === "IDLE" && kA < 140) {
-            state = "DIP"; currentShot = { maxK: kA };
-        }
-        if (state === "DIP" && kA > currentShot.maxK + 5) state = "RISE";
-        if (state === "RISE" && eA > 155) {
-            state = "RELEASE";
-            shotLog.push({ t: new Date().toLocaleTimeString(), k: Math.round(currentShot.maxK), e: Math.round(eA) });
-            document.getElementById('shot-count').innerText = shotLog.length;
-            document.getElementById('btn-save').style.display = "block";
-            setTimeout(() => state = "IDLE", 1200);
-        }
+        // Ricalibra coordinate dal ritaglio al video intero
+        r.poseLandmarks.forEach(lm => { lm.x = lm.x * roi.width + roi.x; });
+        drawConnectors(ctx, r.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+        analyzePose(r.poseLandmarks);
     }
 });
 
-function getAngle(a, b, c) {
-    let ang = Math.abs((Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x)) * 180 / Math.PI);
-    return ang > 180 ? 360 - ang : ang;
-}
+// Caricamento Video
+document.getElementById('video_file').onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => { video.src = ev.target.result; video.load(); };
+    reader.readAsDataURL(file);
+    video.onloadeddata = () => {
+        video.currentTime = 0.1;
+        setTimeout(() => {
+            canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            calibrationStep = 1;
+            feedback.innerText = "1. CLICCA SUL CANESTRO";
+        }, 500);
+    };
+};
+
+// Calibrazione Click
+canvas.addEventListener('mousedown', (e) => {
+    if (calibrationStep === 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) * (canvas.width / rect.width)) / canvas.width;
+    const y = ((e.clientY - rect.top) * (canvas.height / rect.height)) / canvas.height;
+
+    if (calibrationStep === 1) {
+        canestroPos = { x, y }; calibrationStep = 2;
+        feedback.innerText = "2. ISOLA IL TIRATORE (CLICCA SU DI LUI)";
+    } else if (calibrationStep === 2) {
+        playerX = x;
+        roi.x = Math.max(0, playerX - 0.15); roi.width = 0.3;
+        feedback.innerText = "TARGET ACQUISITO. AVVIA ANALISI.";
+        document.getElementById('btn-start').style.display = "block";
+        // Disegna banda di isolamento
+        ctx.fillStyle = "rgba(0, 230, 118, 0.2)";
+        ctx.fillRect(roi.x * canvas.width, 0, roi.width * canvas.width, canvas.height);
+    }
+});
 
 document.getElementById('btn-start').onclick = function() {
     this.style.display = "none";
-    feedback.innerText = "ANALISI SNIPER ATTIVA...";
     video.play();
-    
     async function process() {
         if (!video.ended && !video.paused) {
-            // RITAGLIO: Disegniamo solo la zona del giocatore nel canvas nascosto
             cropCanvas.width = video.videoWidth * roi.width;
             cropCanvas.height = video.videoHeight;
-            cropCtx.drawImage(video, 
-                roi.x * video.videoWidth, 0, roi.width * video.videoWidth, video.videoHeight, // Sorgente
-                0, 0, cropCanvas.width, cropCanvas.height // Destinazione
-            );
-
-            // Mandiamo all'IA solo il ritaglio
+            cropCtx.drawImage(video, roi.x * video.videoWidth, 0, roi.width * video.videoWidth, video.videoHeight, 0, 0, cropCanvas.width, cropCanvas.height);
             await pose.send({image: cropCanvas});
             requestAnimationFrame(process);
-        } else {
-            feedback.innerText = "ANALISI COMPLETATA";
-        }
+        } else { feedback.innerText = "ANALISI COMPLETATA"; }
     }
     process();
 };
 
+// --- INVIO DATI A GOOGLE (Modificato per il tuo Script) ---
 document.getElementById('btn-save').onclick = async function() {
+    if (shotLog.length === 0) return;
     this.innerText = "INVIO...";
+    this.disabled = true;
     try {
-        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
-        alert("Dati inviati!");
+        await fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(shotLog) // Invia l'intero array strutturato
+        });
+        alert("Dati inviati con successo!");
         this.innerText = "SALVATO";
-    } catch(e) { alert("Errore"); this.innerText = "RIPROVA"; }
+    } catch (e) {
+        alert("Errore invio");
+        this.disabled = false;
+        this.innerText = "RIAPROVA";
+    }
 };
 </script>
 </body>
