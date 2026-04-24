@@ -141,13 +141,13 @@ function analyzePose(lm) {
         if (eA > 155) {
             state = "RELEASE_PENDING";
             currentShot.tempRelAngle = eA;
-            frameCounter = 0; // Inizia il conto alla rovescia per il follow-through
+            frameCounter = 0; 
         }
     }
 
     if (state === "RELEASE_PENDING") {
         frameCounter++;
-        if (frameCounter > 15) { // Aspetta 15 frame (~0.5sec) dopo il rilascio
+        if (frameCounter > 15) { 
             state = "RELEASE_COMPLETE";
             const fingerVal = getAngle(elbow, wrist, index) < 160 ? "SI" : "NO";
             const kneeStat = getMetricStatus(currentShot.dip.kA, 'knee_dip');
@@ -188,16 +188,30 @@ pose.onResults(r => {
     drawScene(r.image, r.poseLandmarks);
 });
 
-// --- GESTIONE INPUT ---
+// --- GESTIONE INPUT (CORRETTA) ---
 document.getElementById('video_file').onchange = (e) => {
     const file = e.target.files[0];
-    video.src = URL.createObjectURL(file);
-    video.onloadeddata = () => { video.currentTime = 0.1; };
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+        video.src = event.target.result;
+        video.load(); // Forza il ricaricamento del media
+    };
+    reader.readAsDataURL(file);
+};
+
+video.onloadedmetadata = () => {
+    // Imposta il tempo del video a 0.1s per forzare l'evento onseeked
+    video.currentTime = 0.1;
 };
 
 video.onseeked = () => {
     drawScene();
-    if (calibrationStep === 0) { calibrationStep = 1; feedback.innerText = "1. CLICCA SUL CANESTRO"; }
+    if (calibrationStep === 0) { 
+        calibrationStep = 1; 
+        feedback.innerText = "1. CLICCA SUL CANESTRO"; 
+    }
     if (isAnalyzing) runAnalysis();
 };
 
@@ -228,7 +242,7 @@ async function runAnalysis() {
     cropCanvas.height = video.videoHeight;
     cropCtx.drawImage(video, roi.x * video.videoWidth, 0, roi.width * video.videoWidth, video.videoHeight, 0, 0, cropCanvas.width, cropCanvas.height);
     await pose.send({image: cropCanvas});
-    video.currentTime += (1/60); // Incremento più fine per video HD/60fps
+    video.currentTime += (1/60); 
 }
 
 document.getElementById('btn-start').onclick = function() {
