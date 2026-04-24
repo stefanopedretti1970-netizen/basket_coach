@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Basket Lab Pro - Clinical Precision</title>
+    <title>AI Basket Lab Pro - High Stability</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <style>
@@ -16,6 +16,8 @@
         #controls { bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; z-index: 200; }
         #feedback { position: absolute; top: 20%; width: 100%; text-align: center; font-size: 1.5rem; font-weight: bold; color: #ff5722; text-shadow: 2px 2px 4px #000; pointer-events: none; z-index: 10; }
         button, .btn-label { background: #ff5722; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 13px; }
+        #btn-save { background: #4CAF50; display: none; }
+        #btn-exit { background: #d32f2f; }
         input[type="file"] { display: none; }
         .stat-row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 0.8rem; border-bottom: 1px solid #333; padding-bottom: 2px; }
         .val { color: #00e676; font-weight: bold; }
@@ -32,21 +34,21 @@
     <div id="feedback">1. CARICA VIDEO</div>
 
     <div id="top-left" class="ui-panel">
-        <h3 style="margin:0 0 10px 0; color:#ff5722; font-size: 1rem;">CLINICAL ANALYTICS</h3>
+        <h3 style="margin:0 0 10px 0; color:#ff5722; font-size: 1rem;">STABLE ANALYTICS</h3>
         <div id="live-status">
             <div class="stat-row">Tiri Rilevati: <span id="shot-count" class="val">0</span></div>
-            <div class="stat-row">Stato: <span id="cur-phase" class="val">IDLE</span></div>
+            <div class="stat-row">Sincronismo: <span id="sync-val" class="val">-</span></div>
         </div>
         <hr style="border:0; border-top:1px solid #444; margin:10px 0;">
-        <div id="coach-advice" style="font-size:0.75rem; color:#00e676;">Dati stabilizzati. Analisi biomeccanica attiva.</div>
+        <div id="coach-advice" style="font-size:0.75rem; color:#00e676;">Sistema di stabilizzazione attivo.</div>
     </div>
 
     <div id="controls" class="ui-panel">
         <label id="lbl-upload" class="btn-label" for="video_file">CARICA VIDEO</label>
         <input type="file" id="video_file" accept="video/*">
         <button id="btn-start" style="display:none;">AVVIA ANALISI</button>
-        <button id="btn-save" style="display:none; background:#4CAF50;">SALVA REPORT</button>
-        <button onclick="location.reload()" style="background:#444;">RESET</button>
+        <button id="btn-save">SALVA REPORT</button>
+        <button id="btn-exit" onclick="location.reload()">ESCI</button>
     </div>
 </div>
 
@@ -64,7 +66,7 @@ let canestroPos = null, playerX = null, calibrationStep = 0, isAnalyzing = false
 let shotLog = [], state = "IDLE", currentShot = null, lastShotTime = 0;
 let roi = { x: 0, width: 1 };
 let frameCounter = 0;
-let wristYHistory = []; // Per smoothing polso
+let releaseAnglesBuffer = []; // Buffer per stabilizzare l'angolo di lancio
 
 function getAngle(a, b, c) {
     if(!a || !b || !c || a.visibility < 0.6) return null;
@@ -84,12 +86,6 @@ function getVerticalAngle(top, bottom) {
 
 function analyzePose(lm) {
     const nose=lm[0], shoulder=lm[12], elbow=lm[14], wrist=lm[16], hip=lm[24], knee=lm[26], ankle=lm[28], foot=lm[32], index=lm[20];
-    
-    // Smoothing Y Polso (Media mobile 3 frame)
-    wristYHistory.push(wrist.y);
-    if(wristYHistory.length > 3) wristYHistory.shift();
-    const smoothWristY = wristYHistory.reduce((a, b) => a + b, 0) / wristYHistory.length;
-
     const kA = getAngle(hip, knee, ankle), eA = getAngle(shoulder, elbow, wrist);
     if (kA === null || eA === null) return;
 
@@ -99,9 +95,8 @@ function analyzePose(lm) {
         currentShot = { 
             t: new Date().toLocaleTimeString(), 
             dip: { kA, aA: getAngle(knee, ankle, foot), bA: getVerticalAngle(shoulder, hip), wA: getAngle(elbow, wrist, index) }, 
-            maxK: kA, startX: ankle.x, maxRel: 0 
+            maxK: kA, startX: ankle.x 
         };
-        document.getElementById('cur-phase').innerText = "DIP";
     }
     
     if (state === "DIP") {
@@ -110,63 +105,68 @@ function analyzePose(lm) {
     }
 
     if (state === "RISE") {
-        // VALIDAZIONE SET POINT: Polso deve essere sopra naso MA anche sopra spalla (filtro sicurezza)
-        if (smoothWristY <= nose.y && smoothWristY < shoulder.y && !currentShot.set) {
-            currentShot.set = { 
-                pos: smoothWristY < nose.y ? "Sopra" : "Sotto", 
-                eH: elbow.y.toFixed(2), 
-                kneeAtSet: kA // Questo è il valore del sincronismo
-            };
-            document.getElementById('cur-phase').innerText = "SET POINT";
+        if (wrist.y <= nose.y && !currentShot.set) {
+            currentShot.set = { pos: wrist.y < nose.y ? "Sopra" : "Sotto", eH: elbow.y.toFixed(2), kneeAtSet: kA };
+            document.getElementById('sync-val').innerText = kA + "°";
         }
+        // TRIGGER RILASCIO
         if (eA > 150) {
             state = "MONITORING_RELEASE";
-            currentShot.maxRel = eA;
+            releaseAnglesBuffer = [];
             frameCounter = 0;
         }
     }
 
     if (state === "MONITORING_RELEASE") {
         frameCounter++;
-        if (eA > currentShot.maxRel) currentShot.maxRel = eA;
-        if (frameCounter > 12) {
+        if (eA !== null) releaseAnglesBuffer.push(eA);
+
+        if (frameCounter > 15) { // Analizziamo una finestra di 15 frame
             state = "RELEASE_COMPLETE";
+            
+            // FILTRO DI STABILIZZAZIONE: Prendi i 3 valori più alti e fai la media
+            releaseAnglesBuffer.sort((a, b) => b - a);
+            const topValues = releaseAnglesBuffer.slice(0, 3);
+            const stableReleaseAngle = Math.round(topValues.reduce((a, b) => a + b, 0) / topValues.length);
+
             const fingerVal = getAngle(elbow, wrist, index) < 160 ? "SI" : "NO";
+            
             shotLog.push({
                 timestamp: currentShot.t,
                 dip: currentShot.dip,
                 rise: { kA_at_rise: currentShot.set ? currentShot.set.kneeAtSet : kA },
                 set: currentShot.set || { pos: "N/D", eH: 0, eA: 0 },
                 release: { 
-                    angolo_rilascio: currentShot.maxRel, 
+                    angolo_rilascio: stableReleaseAngle, 
                     sway: (currentShot.startX - ankle.x).toFixed(3), 
-                    estensione_braccio: currentShot.maxRel > 172 ? "Completa" : "Corta", 
+                    estensione_braccio: stableReleaseAngle > 171 ? "Completa" : "Corta", 
                     dita_barattolo: fingerVal 
                 },
                 commento_coach: (currentShot.set && currentShot.set.kneeAtSet > 135) ? "Fluido" : "Due tempi"
             });
+            
             document.getElementById('shot-count').innerText = shotLog.length;
             document.getElementById('btn-save').style.display = "block";
-            state = "IDLE"; lastShotTime = video.currentTime;
-            document.getElementById('cur-phase').innerText = "IDLE";
+            state = "IDLE"; 
+            lastShotTime = video.currentTime;
         }
     }
 }
 
 const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
-pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.6 });
+pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.7 });
 
 pose.onResults(r => {
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.drawImage(video, 0,0,canvas.width,canvas.height);
+    if (canestroPos) {
+        ctx.beginPath(); ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, 15, 0, 2*Math.PI);
+        ctx.strokeStyle = "yellow"; ctx.lineWidth = 4; ctx.stroke();
+    }
     if (r.poseLandmarks) {
         r.poseLandmarks.forEach(lm => { lm.x = lm.x * roi.width + roi.x; });
         drawConnectors(ctx, r.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
         analyzePose(r.poseLandmarks);
-    }
-    if (canestroPos) {
-        ctx.beginPath(); ctx.arc(canestroPos.x * canvas.width, canestroPos.y * canvas.height, 15, 0, 2*Math.PI);
-        ctx.strokeStyle = "yellow"; ctx.lineWidth = 4; ctx.stroke();
     }
 });
 
@@ -191,8 +191,6 @@ canvas.addEventListener('mousedown', (e) => {
     const y = ((e.clientY - rect.top) * (canvas.height / rect.height)) / canvas.height;
     if (calibrationStep === 1) {
         canestroPos = {x, y}; calibrationStep = 2; feedback.innerText = "2. ISOLA IL TIRATORE";
-        ctx.drawImage(video, 0,0,canvas.width,canvas.height);
-        ctx.beginPath(); ctx.arc(x*canvas.width, y*canvas.height, 15, 0, 2*Math.PI); ctx.strokeStyle="yellow"; ctx.stroke();
     } else if (calibrationStep === 2) {
         playerX = x; roi.width = 0.5; roi.x = Math.max(0, x - 0.25);
         feedback.innerText = "PRONTO. AVVIA ANALISI.";
