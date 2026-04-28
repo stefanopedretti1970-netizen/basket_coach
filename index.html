@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Basket Lab Pro - Fix Video</title>
+    <title>AI Basket Lab Pro - Consistency Fix</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <style>
@@ -64,14 +64,14 @@
 
 <div id="report-modal">
     <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h2>ANALISI PERFORMANCE</h2>
+        <h2>ANALISI PERFORMANCE ATLETA</h2>
         <button onclick="document.getElementById('report-modal').style.display='none'" style="background:#444">CHIUDI</button>
     </div>
     <div class="summary-card">
-        Atleta: <input type="text" id="filter-name" placeholder="Nome...">
+        Filtra Atleta: <input type="text" id="filter-name" placeholder="Nome...">
         Dalle: <input type="time" id="filter-start"> 
         Alle: <input type="time" id="filter-end">
-        <button onclick="generateReport()" style="background:#2196F3">Filtra</button>
+        <button onclick="generateReport()" style="background:#2196F3">APPLICA FILTRI</button>
     </div>
     <div id="report-content"></div>
 </div>
@@ -80,10 +80,12 @@
 const STANDARDS = {
     dipKnee: { min: 105, max: 135, label: "Angolo Ginocchia (Dip)" },
     syncRise: { min: 130, max: 150, label: "Sincronismo (Rise)" },
-    releaseAngle: { min: 165, max: 182, label: "Estensione Braccio" },
+    releaseAngle: { min: 165, max: 182, label: "Angolo Lancio" },
     sway: { min: -0.05, max: 0.05, label: "Sway" },
     wrist: { value: "SI", label: "Follow Through" }
 };
+
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby8fNzStDBZFsNYEmH7w_f2kLEgBjl3LQGcQd52T2tAumqui6yKQeH7gwD7rOn_B42lBA/exec";
 
 const video = document.getElementById('input_video');
 const canvas = document.getElementById('output_canvas');
@@ -97,32 +99,34 @@ let shotLog = [], state = "IDLE", currentShot = null, lastShotTime = 0;
 let roi = { x: 0, width: 1 };
 let releaseBuffer = [], frameCounter = 0;
 
-// --- GESTIONE VIDEO (FIXED) ---
+// --- GESTIONE CARICAMENTO VIDEO ---
 document.getElementById('video_file').onchange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
         video.src = ev.target.result;
+        video.load();
     };
     reader.readAsDataURL(file);
 };
 
-video.onloadedmetadata = () => {
+video.addEventListener('loadedmetadata', () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     video.currentTime = 0.1;
-};
+});
 
-video.onseeked = () => {
+video.addEventListener('seeked', () => {
     renderUI();
     if (calibrationStep === 0) {
         calibrationStep = 1;
         feedback.innerText = "1. CLICCA SUL CANESTRO";
     }
-};
+});
 
 function renderUI(landmarks = null) {
+    if (canvas.width === 0) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     if (canestroPos) {
@@ -132,7 +136,6 @@ function renderUI(landmarks = null) {
     if (landmarks) drawConnectors(ctx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
 }
 
-// --- LOGICA CLICK CALIBRAZIONE ---
 canvas.addEventListener('mousedown', (e) => {
     if (isAnalyzing || video.readyState < 2) return;
     const rect = canvas.getBoundingClientRect();
@@ -154,7 +157,7 @@ canvas.addEventListener('mousedown', (e) => {
     }
 });
 
-// --- ANALISI ---
+// --- ANALISI BIOMECCANICA ---
 function getAngle(a, b, c) {
     if(!a || !b || !c || a.visibility < 0.5) return null;
     let v1 = { x: a.x - b.x, y: a.y - b.y }, v2 = { x: c.x - b.x, y: c.y - b.y };
@@ -170,7 +173,12 @@ function analyzePose(lm) {
 
     if (state === "IDLE" && kA < 138 && (video.currentTime - lastShotTime > 1.2)) {
         state = "DIP";
-        currentShot = { t: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}), kA_min: kA, startX: ankle.x };
+        currentShot = { 
+            t: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}), 
+            kA_min: kA, 
+            startX: ankle.x,
+            atleta: document.getElementById('athlete_name').value 
+        };
     }
     if (state === "DIP" && kA > currentShot.kA_min + 8) state = "RISE";
     if (state === "RISE") {
@@ -186,8 +194,10 @@ function analyzePose(lm) {
             releaseBuffer.sort((a,b) => b-a);
             const stableRel = Math.round((releaseBuffer[0] + releaseBuffer[1] + releaseBuffer[2]) / 3);
             shotLog.push({
-                timestamp: currentShot.t, atleta: document.getElementById('athlete_name').value,
-                dip: { kA: currentShot.kA_min }, rise: { kA_at_rise: currentShot.setK || kA },
+                timestamp: currentShot.t, 
+                atleta: currentShot.atleta,
+                dip: { kA: currentShot.kA_min }, 
+                rise: { kA_at_rise: currentShot.setK || kA },
                 release: { lancio: stableRel, sway: (currentShot.startX - ankle.x).toFixed(2), dita: getAngle(elbow, wrist, index) < 160 ? "SI" : "NO" }
             });
             document.getElementById('shot-count').innerText = shotLog.length;
@@ -208,28 +218,48 @@ pose.onResults(r => {
 });
 
 async function runAnalysis() {
-    if (video.ended) { feedback.innerText = "FINE"; return; }
+    if (!isAnalyzing || video.ended) { feedback.innerText = video.ended ? "FINE" : feedback.innerText; return; }
     cropCanvas.width = video.videoWidth * roi.width; cropCanvas.height = video.videoHeight;
     cropCtx.drawImage(video, roi.x * video.videoWidth, 0, roi.width * video.videoWidth, video.videoHeight, 0, 0, cropCanvas.width, cropCanvas.height);
     await pose.send({image: cropCanvas});
-    video.currentTime += (1/60);
-    if(isAnalyzing) requestAnimationFrame(runAnalysis);
+    video.currentTime += (1/30);
+    requestAnimationFrame(runAnalysis);
 }
 
 document.getElementById('btn-start').onclick = () => { isAnalyzing = true; feedback.innerText = "ANALISI..."; runAnalysis(); };
 
-// --- REPORT ---
+// --- REPORT E ERRORI FREQUENTI ---
 function generateReport() {
-    let errorMap = {};
-    const filtered = shotLog; // Semplificato per brevità
+    const fName = document.getElementById('filter-name').value.toLowerCase();
+    const fStart = document.getElementById('filter-start').value;
+    const fEnd = document.getElementById('filter-end').value;
+
+    const filtered = shotLog.filter(s => {
+        const mName = s.atleta.toLowerCase().includes(fName);
+        const mTime = (!fStart || s.timestamp >= fStart) && (!fEnd || s.timestamp <= fEnd);
+        return mName && mTime;
+    });
+
+    let errors = {};
     let html = `<table><thead><tr><th>Ora</th><th>Ginocchia Dip</th><th>Sincro</th><th>Lancio</th><th>Sway</th><th>Dita</th></tr></thead><tbody>`;
+    
     filtered.forEach(s => {
-        const cK = s.dip.kA >= 105 && s.dip.kA <= 135 ? 'ok' : 'warn';
-        const cS = s.rise.kA_at_rise >= 130 && s.rise.kA_at_rise <= 150 ? 'ok' : 'warn';
-        const cL = s.release.lancio >= 165 && s.release.lancio <= 182 ? 'ok' : 'warn';
+        const cK = (s.dip.kA >= STANDARDS.dipKnee.min && s.dip.kA <= STANDARDS.dipKnee.max) ? 'ok' : 'warn';
+        const cS = (s.rise.kA_at_rise >= 130 && s.rise.kA_at_rise <= 150) ? 'ok' : 'warn';
+        const cL = (s.release.lancio >= STANDARDS.releaseAngle.min && s.release.lancio <= STANDARDS.releaseAngle.max) ? 'ok' : 'warn';
+        
+        if(cK==='warn') errors[STANDARDS.dipKnee.label] = (errors[STANDARDS.dipKnee.label] || 0) + 1;
+        if(cS==='warn') errors[STANDARDS.syncRise.label] = (errors[STANDARDS.syncRise.label] || 0) + 1;
+        if(cL==='warn') errors[STANDARDS.releaseAngle.label] = (errors[STANDARDS.releaseAngle.label] || 0) + 1;
+
         html += `<tr><td>${s.timestamp}</td><td class="val-${cK}">${s.dip.kA}°</td><td class="val-${cS}">${s.rise.kA_at_rise}°</td><td class="val-${cL}">${s.release.lancio}°</td><td>${s.release.sway}</td><td>${s.release.dita}</td></tr>`;
     });
-    document.getElementById('report-content').innerHTML = html + "</tbody></table>";
+
+    let summary = `<div class="summary-card"><h3>Errori più frequenti:</h3><ul>`;
+    for (const [key, val] of Object.entries(errors)) { summary += `<li>${key}: ${val} volte</li>`; }
+    summary += `</ul></div>`;
+
+    document.getElementById('report-content').innerHTML = summary + html + "</tbody></table>";
 }
 
 document.getElementById('btn-report').onclick = () => { document.getElementById('report-modal').style.display = 'block'; generateReport(); };
@@ -237,7 +267,7 @@ document.getElementById('btn-report').onclick = () => { document.getElementById(
 document.getElementById('btn-save').onclick = async function() {
     this.innerText = "...";
     try {
-        await fetch("IL_TUO_URL_GOOGLE", { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
+        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(shotLog) });
         alert("Salvato!"); this.innerText = "SALVATO";
     } catch(e) { alert("Errore"); this.innerText = "RIPROVA"; }
 };
