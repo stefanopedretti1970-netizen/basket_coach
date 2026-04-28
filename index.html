@@ -37,7 +37,6 @@
     <div id="top-left" class="ui-panel">
         <h3 style="margin:0 0 10px 0; color:#ff5722; font-size: 1rem;">NBA ANALYTICS v4</h3>
         <div id="live-status">
-            <!-- CAMPO NOME ATLETA AGGIUNTO -->
             <div class="stat-row">Atleta: <input type="text" id="athlete_name" value="Atleta 1"></div>
             <div class="stat-row">Tiri Rilevati: <span id="shot-count" class="val">0</span></div>
             <div class="stat-row">Sincronismo: <span id="sync-val" class="val">-</span></div>
@@ -70,7 +69,6 @@ let shotLog = [], state = "IDLE", currentShot = null, lastShotTime = 0;
 let roi = { x: 0, width: 1 };
 let releaseBuffer = [], frameCounter = 0;
 
-// --- DISEGNO UI ---
 function renderUI(landmarks = null) {
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.drawImage(video, 0,0,canvas.width,canvas.height);
@@ -93,7 +91,6 @@ function renderUI(landmarks = null) {
     }
 }
 
-// --- CALCOLI ---
 function getAngle(a, b, c) {
     if(!a || !b || !c || a.visibility < 0.5) return null;
     let v1 = { x: a.x - b.x, y: a.y - b.y }, v2 = { x: c.x - b.x, y: c.y - b.y };
@@ -132,8 +129,15 @@ function analyzePose(lm) {
 
     if (state === "RISE") {
         if (wrist.y <= nose.y && !currentShot.set) {
-            currentShot.set = { pos: wrist.y < nose.y ? "Sopra" : "Sotto", eH: elbow.y.toFixed(2), eA, kAtSet: kA };
-            document.getElementById('sync-val').innerText = kA + "°";
+            // Validazione: l'angolo del ginocchio al set point deve essere >= angolo al punto di DIP
+            const kAtSetValidated = Math.max(kA, currentShot.dip.kA);
+            currentShot.set = { 
+                pos: wrist.y < nose.y ? "Sopra" : "Sotto", 
+                eH: elbow.y.toFixed(2), 
+                eA, 
+                kAtSet: kAtSetValidated 
+            };
+            document.getElementById('sync-val').innerText = kAtSetValidated + "°";
         }
         if (eA > 150) { state = "RELEASE_TRACK"; releaseBuffer = []; frameCounter = 0; }
     }
@@ -145,12 +149,15 @@ function analyzePose(lm) {
             const stableRel = Math.round((releaseBuffer[0] + releaseBuffer[1] + releaseBuffer[2]) / 3);
             const fingerVal = getAngle(elbow, wrist, index) < 160 ? "SI" : "NO";
             
+            // Logica di fallback per kA_at_rise: usa il valore validato del set point o il kA corrente assicurando la progressione
+            const finalRiseKneeAngle = currentShot.set ? currentShot.set.kAtSet : Math.max(kA, currentShot.dip.kA);
+
             shotLog.push({
                 timestamp: currentShot.t, dip: currentShot.dip,
-                rise: { kA_at_rise: currentShot.set ? currentShot.set.kAtSet : kA },
-                set: currentShot.set || { pos: "N/D", eH: 0, eA: 0 },
+                rise: { kA_at_rise: finalRiseKneeAngle },
+                set: currentShot.set || { pos: "N/D", eH: 0, eA: 0, kAtSet: finalRiseKneeAngle },
                 release: { lancio: stableRel, sway: (currentShot.startX - ankle.x).toFixed(2), ext: stableRel > 171 ? "Completa" : "Corta", dita: fingerVal },
-                commento: (currentShot.set && currentShot.set.kAtSet > 125) ? "Fluido" : "Due tempi"
+                commento: (finalRiseKneeAngle > 125) ? "Fluido" : "Due tempi"
             });
             
             document.getElementById('shot-count').innerText = shotLog.length;
@@ -223,7 +230,7 @@ document.getElementById('btn-save').onclick = async function() {
     const name = document.getElementById('athlete_name').value;
     const payload = shotLog.map(s => ({
         timestamp: s.timestamp,
-        atleta: name, // UTILIZZA IL NOME INSERITO DALL'UTENTE
+        atleta: name,
         dip: s.dip, rise: s.rise, set: s.set,
         release: { angolo_rilascio: s.release.lancio, sway: s.release.sway, estensione_braccio: s.release.ext, dita_barattolo: s.release.dita },
         commento_coach: s.commento
